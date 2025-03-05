@@ -104,7 +104,9 @@ class HumanInput(utils.EventEmitter[EventTypes]):
         """
         Receive the frames from the user audio stream and detect voice activity.
         """
-        vad_stream = self._vad.stream()
+        vad_stream = None
+        if self._vad:
+            vad_stream = self._vad.stream()
         stt_stream = self._stt.stream()
 
         def _before_forward(
@@ -126,19 +128,21 @@ class HumanInput(utils.EventEmitter[EventTypes]):
             # forward the audio stream to the VAD and STT streams
             async for ev in audio_stream:
                 stt_stream.push_frame(ev.frame)
-                vad_stream.push_frame(ev.frame)
+                if vad_stream:
+                    vad_stream.push_frame(ev.frame)
 
         async def _vad_stream_co() -> None:
-            async for ev in vad_stream:
-                if ev.type == voice_activity_detection.VADEventType.START_OF_SPEECH:
-                    self._speaking = True
-                    self.emit("start_of_speech", ev)
-                elif ev.type == voice_activity_detection.VADEventType.INFERENCE_DONE:
-                    self._speech_probability = ev.probability
-                    self.emit("vad_inference_done", ev)
-                elif ev.type == voice_activity_detection.VADEventType.END_OF_SPEECH:
-                    self._speaking = False
-                    self.emit("end_of_speech", ev)
+            if vad_stream:
+                async for ev in vad_stream:
+                    if ev.type == voice_activity_detection.VADEventType.START_OF_SPEECH:
+                        self._speaking = True
+                        self.emit("start_of_speech", ev)
+                    elif ev.type == voice_activity_detection.VADEventType.INFERENCE_DONE:
+                        self._speech_probability = ev.probability
+                        self.emit("vad_inference_done", ev)
+                    elif ev.type == voice_activity_detection.VADEventType.END_OF_SPEECH:
+                        self._speaking = False
+                        self.emit("end_of_speech", ev)
 
         async def _stt_stream_co() -> None:
             async for ev in stt_stream:
@@ -151,9 +155,12 @@ class HumanInput(utils.EventEmitter[EventTypes]):
 
         tasks = [
             asyncio.create_task(_audio_stream_co()),
-            asyncio.create_task(_vad_stream_co()),
             asyncio.create_task(_stt_stream_co()),
         ]
+
+        if vad_stream is not None:
+            tasks.append(asyncio.create_task(_vad_stream_co()))
+
         try:
             await asyncio.gather(*tasks)
         finally:
@@ -161,4 +168,5 @@ class HumanInput(utils.EventEmitter[EventTypes]):
 
             await stt_forwarder.aclose()
             await stt_stream.aclose()
-            await vad_stream.aclose()
+            if vad_stream:
+                await vad_stream.aclose()
