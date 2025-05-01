@@ -16,7 +16,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+import logging
 import aiohttp
+import json
 from aiobotocore.session import AioSession, get_session
 from livekit.agents import (
     APIConnectionError,
@@ -36,6 +38,10 @@ DEFAULT_SPEECH_REGION = "us-east-1"
 DEFAULT_VOICE = "Ruth"
 DEFAULT_SAMPLE_RATE = 16000
 
+# Supported speechmark types
+SPEECHMARK_TYPES = ["ssml"]
+
+logger = logging.getLogger("aws-tts")
 
 @dataclass
 class _TTSOptions:
@@ -45,6 +51,8 @@ class _TTSOptions:
     speech_region: str
     sample_rate: int
     language: TTS_LANGUAGE | str | None
+    speechmark_types: List[str]
+    ssml_params: Dict[str, Any]  # SSML wrapper parameters
 
 
 class TTS(tts.TTS):
@@ -56,6 +64,8 @@ class TTS(tts.TTS):
         speech_engine: TTS_SPEECH_ENGINE = DEFAULT_SPEECH_ENGINE,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         speech_region: str = DEFAULT_SPEECH_REGION,
+        speechmark_types: List[str] = SPEECHMARK_TYPES,
+        ssml_params: Dict[str, Any] = None,  # NEW: Dict for all SSML parameters
         api_key: str | None = None,
         api_secret: str | None = None,
         session: AioSession | None = None,
@@ -95,6 +105,8 @@ class TTS(tts.TTS):
             speech_region=speech_region,
             language=language,
             sample_rate=sample_rate,
+            speechmark_types=speechmark_types,
+            ssml_params=ssml_params,
         )
         self._session = session or get_session()
 
@@ -105,6 +117,90 @@ class TTS(tts.TTS):
             aws_access_key_id=self._api_key,
             aws_secret_access_key=self._api_secret,
         )
+    def _wrap_with_ssml(self, text: str) -> str:
+        """
+        Wrap the input text with proper SSML tags.
+
+        Args:
+            text (str): Input text which may contain mark tags.
+            ssml_params (Dict[str, Any]): Parameters for SSML wrapping.
+
+        Returns:
+            str: Properly formatted SSML text.
+        """
+        # Check if text already has <speak> tags
+        if text.strip().startswith("<speak>") and text.strip().endswith("</speak>"):
+            return text
+
+        # Extract prosody parameters
+        prosody_attrs = []
+        for attr in ["rate", "pitch", "volume"]:
+            if attr in self._opts.ssml_params and self._opts.ssml_params[attr]:
+                prosody_attrs.append(f'{attr}="{self._opts.ssml_params[attr]}"')
+
+        # Construct SSML with prosody if needed
+        if prosody_attrs:
+            prosody_open = f'<prosody {" ".join(prosody_attrs)}>'
+            prosody_close = '</prosody>'
+            wrapped_text = f'<speak>{prosody_open}{text}{prosody_close}</speak>'
+        else:
+            wrapped_text = f'<speak>{text}</speak>'
+
+        return wrapped_text
+
+    async def fetch_speechmarks(
+        self,
+        text: str,
+    ) -> List[dict]:
+        """
+        Fetch all speechmarks for the given text as a separate operation.
+
+        Args:
+            text (str): The text to get speechmarks for.
+
+        Returns:
+            List[dict]: List of speechmark objects.
+        """
+        # Process the input text - wrap with SSML if needed
+        processed_text = self._wrap_with_ssml(text)
+
+        async with self._get_client() as client:
+            params = {
+                "Text": processed_text,
+                "OutputFormat": "json",
+                "Engine": self._opts.speech_engine,
+                "VoiceId": self._opts.voice,
+                "TextType": "ssml",
+                "SampleRate": str(self._opts.sample_rate),
+                "LanguageCode": self._opts.language,
+                "SpeechMarkTypes": self._opts.speechmark_types,
+            }
+
+            final_params = _strip_nones(params)
+            logger.info(f"Speechmark params = {final_params}")
+
+            try:
+                response = await client.synthesize_speech(**final_params)
+                speechmarks = []
+
+                if "AudioStream" in response:
+                    async with response["AudioStream"] as resp:
+                        data = await resp.read()
+                        # AWS Polly returns each speechmark as a separate JSON object on new lines
+                        for line in data.decode('utf-8').strip().split('\n'):
+                            if line:
+                                try:
+                                    mark = json.loads(line)
+                                    speechmarks.append(mark)
+                                except json.JSONDecodeError as err:
+                                    logger.info(f"JSON Error - {err}")
+                                    pass
+
+                logger.info(f"Fetched {len(speechmarks)} speechmarks")
+                return speechmarks
+            except Exception as e:
+                logger.error(f"Error fetching speechmarks: {str(e)}")
+                return []
 
     def synthesize(
         self,
@@ -112,9 +208,13 @@ class TTS(tts.TTS):
         *,
         conn_options: Optional[APIConnectOptions] = None,
     ) -> "ChunkedStream":
+
+        # Process the input text - wrap with SSML if needed
+        processed_text = self._wrap_with_ssml(text)
+
         return ChunkedStream(
             tts=self,
-            text=text,
+            text=processed_text,
             conn_options=conn_options,
             opts=self._opts,
             get_client=self._get_client,
@@ -146,7 +246,7 @@ class ChunkedStream(tts.ChunkedStream):
                     "OutputFormat": "mp3",
                     "Engine": self._opts.speech_engine,
                     "VoiceId": self._opts.voice,
-                    "TextType": "text",
+                    "TextType": "ssml",
                     "SampleRate": str(self._opts.sample_rate),
                     "LanguageCode": self._opts.language,
                 }
@@ -198,3 +298,4 @@ class ChunkedStream(tts.ChunkedStream):
 
 def _strip_nones(d: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in d.items() if v is not None}
+    
