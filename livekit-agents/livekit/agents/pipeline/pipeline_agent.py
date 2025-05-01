@@ -200,6 +200,7 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
         before_tts_cb: BeforeTTSCallback = _default_before_tts_cb,
         plotting: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
+        skip_vad: bool = False,
         # backward compatibility
         will_synthesize_assistant_reply: WillSynthesizeAssistantReply | None = None,
     ) -> None:
@@ -234,9 +235,11 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
                 (e.g: editing the pronunciation of a word).
             plotting: Whether to enable plotting for debugging. matplotlib must be installed.
             loop: Event loop to use. Default to asyncio.get_event_loop().
+            skip_vad: If True, bypass VAD and provide the stream directly to STT.
         """
         super().__init__()
         self._loop = loop or asyncio.get_event_loop()
+        self._skip_vad = skip_vad
 
         if will_synthesize_assistant_reply is not None:
             logger.warning(
@@ -274,7 +277,7 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
 
             stt = speech_to_text.StreamAdapter(
                 stt=stt,
-                vad=vad,
+                vad=(None if self._skip_vad else vad),
             )
 
         self._stt, self._vad, self._llm, self._tts = stt, vad, llm, tts
@@ -390,11 +393,12 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
                 ),
             )
 
-        @self._vad.on("metrics_collected")
-        def _on_vad_metrics(vad_metrics: vad.VADMetrics) -> None:
-            self.emit(
-                "metrics_collected", metrics.PipelineVADMetrics(**vad_metrics.__dict__)
-            )
+        if not self._skip_vad:
+            @self._vad.on("metrics_collected")
+            def _on_vad_metrics(vad_metrics: vad.VADMetrics) -> None:
+                self.emit(
+                    "metrics_collected", metrics.PipelineVADMetrics(**vad_metrics.__dict__)
+                )
 
         room.on("participant_connected", self._on_participant_connected)
         self._room, self._participant = room, participant
@@ -556,50 +560,6 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
             logger.error("_link_participant must be called with a valid identity")
             return
 
-        self._human_input = HumanInput(
-            room=self._room,
-            vad=self._vad,
-            stt=self._stt,
-            participant=participant,
-            transcription=self._opts.transcription.user_transcription,
-            noise_cancellation=self._noise_cancellation,
-        )
-
-        def _on_start_of_speech(ev: vad.VADEvent) -> None:
-            self._plotter.plot_event("user_started_speaking")
-            self.emit("user_started_speaking")
-            self._deferred_validation.on_human_start_of_speech(ev)
-
-        def _on_vad_inference_done(ev: vad.VADEvent) -> None:
-            if not self._track_published_fut.done():
-                return
-
-            assert self._agent_output is not None
-
-            tv = 1.0
-            if self._opts.allow_interruptions:
-                tv = max(0.0, 1.0 - ev.probability)
-                self._agent_output.playout.target_volume = tv
-
-            smoothed_tv = self._agent_output.playout.smoothed_volume
-
-            self._plotter.plot_value("raw_vol", tv)
-            self._plotter.plot_value("smoothed_vol", smoothed_tv)
-            self._plotter.plot_value("vad_probability", ev.probability)
-
-            if ev.speech_duration >= self._opts.int_speech_duration:
-                self._interrupt_if_possible()
-
-            if ev.raw_accumulated_speech > 0.0:
-                self._last_speech_time = (
-                    time.perf_counter() - ev.raw_accumulated_silence
-                )
-
-        def _on_end_of_speech(ev: vad.VADEvent) -> None:
-            self._plotter.plot_event("user_stopped_speaking")
-            self.emit("user_stopped_speaking")
-            self._deferred_validation.on_human_end_of_speech(ev)
-
         def _on_interim_transcript(ev: stt.SpeechEvent) -> None:
             self._transcribed_interim_text = ev.alternatives[0].text
 
@@ -638,11 +598,66 @@ class VoicePipelineAgent(utils.EventEmitter[EventTypes]):
                 # to make the interruption more reliable, we also interrupt on the final transcript.
                 self._interrupt_if_possible()
 
-        self._human_input.on("start_of_speech", _on_start_of_speech)
-        self._human_input.on("vad_inference_done", _on_vad_inference_done)
-        self._human_input.on("end_of_speech", _on_end_of_speech)
-        self._human_input.on("interim_transcript", _on_interim_transcript)
-        self._human_input.on("final_transcript", _on_final_transcript)
+        if self._skip_vad:
+            self._human_input = HumanInput(
+                room=self._room,
+                vad=None,
+                stt=self._stt,
+                participant=participant,
+                transcription=self._opts.transcription.user_transcription,
+            )
+            self._human_input.on("interim_transcript", _on_interim_transcript)
+            self._human_input.on("final_transcript", _on_final_transcript)
+        else:
+            self._human_input = HumanInput(
+                room=self._room,
+                vad=self._vad,
+                stt=self._stt,
+                participant=participant,
+                transcription=self._opts.transcription.user_transcription,
+            noise_cancellation=self._noise_cancellation,
+            )
+
+            def _on_start_of_speech(ev: vad.VADEvent) -> None:
+                self._plotter.plot_event("user_started_speaking")
+                self.emit("user_started_speaking")
+                self._deferred_validation.on_human_start_of_speech(ev)
+
+            def _on_vad_inference_done(ev: vad.VADEvent) -> None:
+                if not self._track_published_fut.done():
+                    return
+
+                assert self._agent_output is not None
+
+                tv = 1.0
+                if self._opts.allow_interruptions:
+                    tv = max(0.0, 1.0 - ev.probability)
+                    self._agent_output.playout.target_volume = tv
+
+                smoothed_tv = self._agent_output.playout.smoothed_volume
+
+                self._plotter.plot_value("raw_vol", tv)
+                self._plotter.plot_value("smoothed_vol", smoothed_tv)
+                self._plotter.plot_value("vad_probability", ev.probability)
+
+                if ev.speech_duration >= self._opts.int_speech_duration:
+                    self._interrupt_if_possible()
+
+                if ev.raw_accumulated_speech > 0.0:
+                    self._last_speech_time = (
+                        time.perf_counter() - ev.raw_accumulated_silence
+                    )
+
+            def _on_end_of_speech(ev: vad.VADEvent) -> None:
+                self._plotter.plot_event("user_stopped_speaking")
+                self.emit("user_stopped_speaking")
+                self._deferred_validation.on_human_end_of_speech(ev)
+                
+            self._human_input.on("start_of_speech", _on_start_of_speech)
+            self._human_input.on("vad_inference_done", _on_vad_inference_done)
+            self._human_input.on("end_of_speech", _on_end_of_speech)
+            self._human_input.on("interim_transcript", _on_interim_transcript)
+            self._human_input.on("final_transcript", _on_final_transcript)
 
     @utils.log_exceptions(logger=logger)
     async def _main_task(self) -> None:

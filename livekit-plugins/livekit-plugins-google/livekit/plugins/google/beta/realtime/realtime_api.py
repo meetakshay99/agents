@@ -383,6 +383,10 @@ class GeminiRealtimeSession(utils.EventEmitter[EventTypes]):
 
         self._push_media_chunk(frame.data.tobytes(), "audio/pcm")
 
+    async def send_text(self, text: str) -> None:
+        self._chat_ctx.append(text=text, role="user")
+        self.create_response(on_duplicate="keep_both")
+
     def _queue_msg(self, msg: ClientEvents) -> None:
         self._send_ch.send_nowait(msg)
 
