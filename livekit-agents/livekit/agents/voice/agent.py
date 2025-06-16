@@ -388,6 +388,37 @@ class Agent:
                     await utils.aio.cancel_and_wait(forward_task)
 
         @staticmethod
+        async def tts_node_without_tokenize(
+            agent: Agent, text: AsyncIterable[str], model_settings: ModelSettings
+        ) -> AsyncGenerator[rtc.AudioFrame, None]:
+            """Default implementation for `Agent.tts_node_without_tokenize`"""
+            activity = agent._get_activity_or_raise()
+            assert activity.tts is not None, "tts_node_without_tokenize called but no TTS node is available"
+
+            wrapped_tts = activity.tts
+
+            if not activity.tts.capabilities.streaming:
+                wrapped_tts = tts.StreamAdapter(
+                    tts=wrapped_tts, sentence_tokenizer=tokenize.basic.DummySentenceTokenizer()
+                )
+
+            conn_options = activity.session.conn_options.tts_conn_options
+            async with wrapped_tts.stream(conn_options=conn_options) as stream:
+
+                async def _forward_input() -> None:
+                    async for chunk in text:
+                        stream.push_text(chunk)
+
+                    stream.end_input()
+
+                forward_task = asyncio.create_task(_forward_input())
+                try:
+                    async for ev in stream:
+                        yield ev.frame
+                finally:
+                    await utils.aio.cancel_and_wait(forward_task)
+                    
+        @staticmethod
         async def transcription_node(
             agent: Agent, text: AsyncIterable[str], model_settings: ModelSettings
         ) -> AsyncGenerator[str, None]:
