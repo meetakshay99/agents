@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+import logging
 import aioboto3  # type: ignore
 import botocore  # type: ignore
 import botocore.exceptions  # type: ignore
@@ -38,6 +39,7 @@ from .utils import _strip_nones
 DEFAULT_SPEECH_ENGINE: TTSSpeechEngine = "generative"
 DEFAULT_VOICE = "Ruth"
 
+logger = logging.getLogger("aws-tts")
 
 @dataclass
 class _TTSOptions:
@@ -47,7 +49,7 @@ class _TTSOptions:
     region: str | None
     sample_rate: int
     language: TTSLanguages | str | None
-
+    ssml_params: Dict[str, Any] # SSML wrapper parameters
 
 class TTS(tts.TTS):
     def __init__(
@@ -56,6 +58,7 @@ class TTS(tts.TTS):
         voice: str = "Ruth",
         language: NotGivenOr[TTSLanguages | str] = NOT_GIVEN,
         speech_engine: TTSSpeechEngine = "generative",
+        ssml_params: Dict[str, Any] = None,  # NEW: Dict for all SSML parameters
         sample_rate: int = 16000,
         region: str | None = None,
         api_key: str | None = None,
@@ -99,12 +102,45 @@ class TTS(tts.TTS):
             region=region or None,
             language=language or None,
             sample_rate=sample_rate,
+            ssml_params=ssml_params if ssml_params else {},
         )
+
+    def _build_ssml(self, text: str) -> str:
+        """
+        Wrap the input text with proper SSML tags.
+        Args:
+            text (str): Input text which may contain mark tags.
+            ssml_params (Dict[str, Any]): Parameters for SSML wrapping.
+        Returns:
+            str: Properly formatted SSML text.
+        """
+        # Check if text already has <speak> tags. If so, just use it directly.
+        if text.strip().startswith("<speak>"):
+            return text
+
+        # Extract prosody parameters
+        prosody_attrs = []
+        for attr in ["rate", "pitch", "volume"]:
+            if attr in self._opts.ssml_params and self._opts.ssml_params[attr]:
+                prosody_attrs.append(f'{attr}="{self._opts.ssml_params[attr]}"')
+
+        # Construct SSML with prosody if needed
+        if prosody_attrs:
+            prosody_open = f'<prosody {" ".join(prosody_attrs)}>'
+            prosody_close = '</prosody>'
+            wrapped_text = f'<speak>{prosody_open}{text}{prosody_close}</speak>'
+        else:
+            wrapped_text = f'<speak>{text}</speak>'
+
+        return wrapped_text
 
     def synthesize(
         self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
     ) -> ChunkedStream:
-        return ChunkedStream(tts=self, text=text, conn_options=conn_options)
+        # Process the input text - wrap with SSML if needed
+        ssml_text = self._build_ssml(text)
+
+        return ChunkedStream(tts=self, text=ssml_text, conn_options=conn_options)
 
 
 class ChunkedStream(tts.ChunkedStream):
@@ -122,6 +158,7 @@ class ChunkedStream(tts.ChunkedStream):
                 read_timeout=10,
                 retries={"mode": "standard", "total_max_attempts": 1},
             )
+            logger.info(f"Sending text to polly - {self._input_text}")
             async with self._tts._session.client("polly", config=config) as client:  # type: ignore
                 response = await client.synthesize_speech(
                     **_strip_nones(
@@ -130,7 +167,7 @@ class ChunkedStream(tts.ChunkedStream):
                             "OutputFormat": "mp3",
                             "Engine": self._opts.speech_engine,
                             "VoiceId": self._opts.voice,
-                            "TextType": "text",
+                            "TextType": "ssml",
                             "SampleRate": str(self._opts.sample_rate),
                             "LanguageCode": self._opts.language,
                         }
