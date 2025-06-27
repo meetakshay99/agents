@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterable
 from typing import Any
+import logging
+import re
 
 from .. import tokenize, utils
 from ..types import DEFAULT_API_CONNECT_OPTIONS, NOT_GIVEN, APIConnectOptions, NotGivenOr
@@ -20,6 +22,7 @@ DEFAULT_STREAM_ADAPTER_API_CONNECT_OPTIONS = APIConnectOptions(
     max_retry=0, timeout=DEFAULT_API_CONNECT_OPTIONS.timeout
 )
 
+logger = logging.getLogger("StreamAdapter")
 
 class StreamAdapter(TTS):
     def __init__(
@@ -55,19 +58,25 @@ class StreamAdapter(TTS):
         self,
         *,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        callback: any,
+        words_per_sec: float
     ) -> StreamAdapterWrapper:
-        return StreamAdapterWrapper(tts=self, conn_options=conn_options)
+        logger.info("In streamAdapter stream")
+        return StreamAdapterWrapper(tts=self, conn_options=conn_options, callback=callback, words_per_sec=words_per_sec)
 
     def prewarm(self) -> None:
         self._wrapped_tts.prewarm()
 
 
 class StreamAdapterWrapper(SynthesizeStream):
-    def __init__(self, *, tts: StreamAdapter, conn_options: APIConnectOptions) -> None:
+    def __init__(self, *, tts: StreamAdapter, conn_options: APIConnectOptions, callback: any, words_per_sec: float) -> None:
         super().__init__(tts=tts, conn_options=DEFAULT_STREAM_ADAPTER_API_CONNECT_OPTIONS)
         self._tts: StreamAdapter = tts
         self._wrapped_tts_conn_options = conn_options
         self._sent_stream = tts._sentence_tokenizer.stream()
+        self._callback = callback
+        self._words_per_sec = words_per_sec
+        logger.info(f"In streamAdapterWrapper init - words_per_sec = {self._words_per_sec}")
 
     async def _metrics_monitor_task(self, event_aiter: AsyncIterable[SynthesizedAudio]) -> None:
         pass  # do nothing
@@ -96,15 +105,50 @@ class StreamAdapterWrapper(SynthesizeStream):
             self._sent_stream.end_input()
 
         async def _synthesize() -> None:
+            total_time = 0
+            tag_index = 0
+            tag_pattern = re.compile(r'\{(.*?)\}')  # Non-greedy match between {}
+            logger.info("In streamAdapterWrapper synthesize")
             async for ev in self._sent_stream:
+                logger.info(f"Received ev.token - {ev.token}")
+
+                parts = tag_pattern.split(ev.token)
+                result_parts = []
+
+                # Cumulative words from the start of this event
+                cumulative_words = 0
+
+                for i, part in enumerate(parts):
+                    if i % 2 == 1:  # Odd indices are tags (content inside {})
+                        # Calculate time offset for all words before this tag
+                        time_for_words = cumulative_words / self._words_per_sec if self._words_per_sec > 0 else 0
+                        tag_index += 1
+                        clean_text = await self._callback(part, tag_index, total_time + time_for_words)
+                        
+                        # For <trl-break tags, callback will return changing it to <break tag which we need to include in the text sent out to TTS for synthesis but don't want to count it as a word.
+                        if clean_text:
+                            result_parts.append(' ' + clean_text + ' ')
+                    else:
+                        # Remove stray curly braces from text parts
+                        clean_part = part.replace('{', '').replace('}', '').strip()
+                        if clean_part:
+                            num_words = len(clean_part.split())
+                            cumulative_words += num_words
+                            result_parts.append(clean_part)
+
+                joined = ' '.join(result_parts)
+
+                logger.info(f"Synthesizing - {joined}")
                 async with self._tts._wrapped_tts.synthesize(
-                    ev.token, conn_options=self._wrapped_tts_conn_options
+                    joined, conn_options=self._wrapped_tts_conn_options
                 ) as tts_stream:
                     async for audio in tts_stream:
+                        logger.info(f"Synthesized audio of duration - {audio.frame.duration}")
+                        total_time = total_time + audio.frame.duration
                         output_emitter.push(audio.frame.data.tobytes())
 
                     output_emitter.flush()
-
+                
         tasks = [
             asyncio.create_task(_forward_input()),
             asyncio.create_task(_synthesize()),
@@ -113,3 +157,4 @@ class StreamAdapterWrapper(SynthesizeStream):
             await asyncio.gather(*tasks)
         finally:
             await utils.aio.cancel_and_wait(*tasks)
+
