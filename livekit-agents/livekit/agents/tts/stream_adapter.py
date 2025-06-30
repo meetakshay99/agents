@@ -156,16 +156,17 @@ class StreamAdapterWrapper(SynthesizeStream):
 
                 joined = ' '.join(result_parts)
 
-                logger.info(f"Synthesizing - {joined}")
-                async with self._tts._wrapped_tts.synthesize(
-                    joined, conn_options=self._wrapped_tts_conn_options
-                ) as tts_stream:
-                    async for audio in tts_stream:
-                        logger.info(f"Synthesized audio of duration - {audio.frame.duration}")
-                        total_time = total_time + audio.frame.duration
-                        output_emitter.push(audio.frame.data.tobytes())
+                if joined.strip():
+                    logger.info(f"Synthesizing - {joined}")
+                    async with self._tts._wrapped_tts.synthesize(
+                        joined, conn_options=self._wrapped_tts_conn_options
+                    ) as tts_stream:
+                        async for audio in tts_stream:
+                            logger.info(f"Synthesized audio of duration - {audio.frame.duration}")
+                            total_time = total_time + audio.frame.duration
+                            output_emitter.push(audio.frame.data.tobytes())
 
-                    output_emitter.flush()
+                        output_emitter.flush()
                 
         tasks = [
             asyncio.create_task(_forward_input()),
