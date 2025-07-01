@@ -121,10 +121,8 @@ class StreamAdapterWrapper(SynthesizeStream):
             total_time = 0
             tag_index = 0
             tag_pattern = re.compile(r'\{(.*?)\}')  # Non-greedy match between {}
-            logger.info("In streamAdapterWrapper synthesize")
             
             async for ev in self._sent_stream:
-                logger.info(f"Received ev.token - {ev.token}")
 
                 total_break_time = 0
                 parts = tag_pattern.split(ev.token)
@@ -162,7 +160,6 @@ class StreamAdapterWrapper(SynthesizeStream):
                         joined, conn_options=self._wrapped_tts_conn_options
                     ) as tts_stream:
                         async for audio in tts_stream:
-                            logger.info(f"Synthesized audio of duration - {audio.frame.duration}")
                             total_time = total_time + audio.frame.duration
                             output_emitter.push(audio.frame.data.tobytes())
 
