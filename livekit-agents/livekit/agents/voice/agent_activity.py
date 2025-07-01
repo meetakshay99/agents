@@ -689,8 +689,16 @@ class AgentActivity(RecognitionHooks):
         if self.draining and not bypass_draining:
             raise RuntimeError("cannot schedule new speech, the agent is draining")
 
-        # Negate the priority to make it a max heap
-        heapq.heappush(self._speech_q, (-priority, time.monotonic_ns(), speech))
+        while True:
+            try:
+                # negate the priority to make it a max heap
+                heapq.heappush(self._speech_q, (-priority, time.perf_counter_ns(), speech))
+                break
+            except TypeError:
+                # handle TypeError when identical timestamps cause speech comparison failure
+                # with perf_counter_ns(), collisions should be rare
+                pass
+
         self._wake_up_main_task()
 
     @utils.log_exceptions(logger=logger)
@@ -967,7 +975,11 @@ class AgentActivity(RecognitionHooks):
                 self._rt_session.interrupt()
 
         # id is generated
-        user_message: llm.ChatMessage = llm.ChatMessage(role="user", content=[info.new_transcript])
+        user_message: llm.ChatMessage = llm.ChatMessage(
+            role="user",
+            content=[info.new_transcript],
+            transcript_confidence=info.transcript_confidence,
+        )
 
         # create a temporary mutable chat context to pass to on_user_turn_completed
         # the user can edit it for the current generation, but changes will not be kept inside the
@@ -1051,8 +1063,10 @@ class AgentActivity(RecognitionHooks):
         text_source: AsyncIterable[str] | None = None
         audio_source: AsyncIterable[str] | None = None
 
+        tee: utils.aio.itertools.Tee[str] | None = None
         if isinstance(text, AsyncIterable):
-            text_source, audio_source = utils.aio.itertools.tee(text, 2)
+            tee = utils.aio.itertools.tee(text, 2)
+            text_source, audio_source = tee
         elif isinstance(text, str):
 
             async def _read_text() -> AsyncIterable[str]:
@@ -1117,6 +1131,9 @@ class AgentActivity(RecognitionHooks):
                 audio_output.clear_buffer()
                 await audio_output.wait_for_playout()
 
+        if tee is not None:
+            await tee.aclose()
+
         if add_to_chat_ctx:
             msg = self._agent._chat_ctx.add_message(
                 role="assistant",
@@ -1180,7 +1197,8 @@ class AgentActivity(RecognitionHooks):
             model_settings=model_settings,
         )
         tasks.append(llm_task)
-        tts_text_input, llm_output = utils.aio.itertools.tee(llm_gen_data.text_ch)
+        tee = utils.aio.itertools.tee(llm_gen_data.text_ch, 2)
+        tts_text_input, llm_output = tee
 
         tts_task: asyncio.Task[bool] | None = None
         tts_gen_data: _TTSGenerationData | None = None
@@ -1198,6 +1216,7 @@ class AgentActivity(RecognitionHooks):
 
         if speech_handle.interrupted:
             await utils.aio.cancel_and_wait(*tasks)
+            await tee.aclose()
             return
 
         reply_started_at = time.time()
@@ -1253,6 +1272,7 @@ class AgentActivity(RecognitionHooks):
 
         if speech_handle.interrupted:
             await utils.aio.cancel_and_wait(*tasks)
+            await tee.aclose()
 
             forwarded_text = text_out.text if text_out else ""
             # if the audio playout was enabled, clear the buffer
@@ -1310,6 +1330,7 @@ class AgentActivity(RecognitionHooks):
         log_event("playout completed", speech_id=speech_handle.id)
 
         speech_handle._mark_playout_done()  # mark the playout done before waiting for the tool execution  # noqa: E501
+        await tee.aclose()
 
         await exe_task
 
