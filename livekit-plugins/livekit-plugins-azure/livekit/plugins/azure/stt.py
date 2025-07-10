@@ -352,6 +352,8 @@ def _create_speech_recognizer(
             speechsdk.languageconfig.AutoDetectSourceLanguageConfig(languages=config.language)
         )
 
+    speech_config.set_property(property_id=speechsdk.enums.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous')
+
     audio_config = speechsdk.audio.AudioConfig(stream=stream)
     speech_recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config,
