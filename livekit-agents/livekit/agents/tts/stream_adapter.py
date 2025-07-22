@@ -32,14 +32,14 @@ class StreamAdapter(TTS):
         sentence_tokenizer: NotGivenOr[tokenize.SentenceTokenizer] = NOT_GIVEN,
     ) -> None:
         super().__init__(
-            capabilities=TTSCapabilities(
-                streaming=True,
-            ),
+            capabilities=TTSCapabilities(streaming=True, aligned_transcript=True),
             sample_rate=tts.sample_rate,
             num_channels=tts.num_channels,
         )
         self._wrapped_tts = tts
-        self._sentence_tokenizer = sentence_tokenizer or tokenize.basic.SentenceTokenizer()
+        self._sentence_tokenizer = sentence_tokenizer or tokenize.blingfire.SentenceTokenizer(
+            retain_format=True
+        )
 
         @self._wrapped_tts.on("metrics_collected")
         def _forward_metrics(*args: Any, **kwargs: Any) -> None:
@@ -47,10 +47,7 @@ class StreamAdapter(TTS):
             self.emit("metrics_collected", *args, **kwargs)
 
     def synthesize(
-        self,
-        text: str,
-        *,
-        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
     ) -> ChunkedStream:
         return self._wrapped_tts.synthesize(text=text, conn_options=conn_options)
 
@@ -121,9 +118,10 @@ class StreamAdapterWrapper(SynthesizeStream):
             total_time = 0
             tag_index = 0
             tag_pattern = re.compile(r'\{(.*?)\}')  # Non-greedy match between {}
-            
-            async for ev in self._sent_stream:
+            from ..voice.io import TimedString
 
+            duration = 0.0
+            async for ev in self._sent_stream:
                 total_break_time = 0
                 parts = tag_pattern.split(ev.token)
                 result_parts = []
@@ -156,10 +154,16 @@ class StreamAdapterWrapper(SynthesizeStream):
 
                 if joined.strip():
                     logger.info(f"Synthesizing - {joined}")
+                    
+                    output_emitter.push_timed_transcript(
+                        TimedString(text=joined, start_time=duration)
+                    )
+
                     async with self._tts._wrapped_tts.synthesize(
                         joined, conn_options=self._wrapped_tts_conn_options
                     ) as tts_stream:
                         async for audio in tts_stream:
+                            duration += audio.frame.duration
                             total_time = total_time + audio.frame.duration
                             output_emitter.push(audio.frame.data.tobytes())
 
