@@ -19,6 +19,15 @@ class LLMMetrics(BaseModel):
     total_tokens: int
     tokens_per_second: float
     speech_id: str | None = None
+    def to_string(self):
+        return f'''
+        LLM Metrics ::==>
+        label = {self.label}
+        timestamp = {self.timestamp}
+        duration = {self.duration}
+        ttft = {self.ttft}
+        speech_id = {self.speech_id}
+        '''
 
 
 class STTMetrics(BaseModel):
@@ -33,6 +42,15 @@ class STTMetrics(BaseModel):
     streamed: bool
     """Whether the STT is streaming (e.g using websocket)."""
 
+    def to_string(self):
+        return f'''
+        STT Metrics ::==>
+        label = {self.label}
+        timestamp = {self.timestamp}
+        duration (time taken for stt) = {self.duration}
+        audio_duration = {self.audio_duration}
+        streamed = {self.streamed}
+        '''
 
 class TTSMetrics(BaseModel):
     type: Literal["tts_metrics"] = "tts_metrics"
@@ -48,7 +66,18 @@ class TTSMetrics(BaseModel):
     segment_id: str | None = None
     speech_id: str | None = None
 
-
+    def to_string(self):
+        return f'''
+        TTS Metrics ::==>
+        label = {self.label}
+        timestamp = {self.timestamp}
+        ttfb = {self.ttfb}
+        duration (time taken for tts) = {self.duration}
+        audio_duration = {self.audio_duration}
+        streamed = {self.streamed}
+        speech_id = {self.speech_id}
+        '''
+        
 class VADMetrics(BaseModel):
     type: Literal["vad_metrics"] = "vad_metrics"
     label: str
@@ -57,6 +86,14 @@ class VADMetrics(BaseModel):
     inference_duration_total: float
     inference_count: int
 
+    def to_string(self):
+        return f'''
+        VAD Metrics ::==>
+        label = {self.label}
+        timestamp = {self.timestamp}
+        idle_time = {self.idle_time}
+        inference_duration_total = {self.inference_duration_total}
+        '''
 
 class EOUMetrics(BaseModel):
     type: Literal["eou_metrics"] = "eou_metrics"
@@ -79,6 +116,14 @@ class EOUMetrics(BaseModel):
 
     speech_id: str | None = None
 
+    def to_string(self):
+        return f'''
+        EOU Metrics ::==>
+        end_of_utterance_delay (Time between speech end from VAD and user's turn end. Includes transcription_delay) = {self.end_of_utterance_delay}
+        transcription_delay (Time to obtain the transcript after user's speech end) = {self.transcription_delay}
+        on_user_turn_completed_delay = {self.on_user_turn_completed_delay}
+        speech_id = {self.speech_id}
+        '''
 
 class RealtimeModelMetrics(BaseModel):
     class CachedTokenDetails(BaseModel):
