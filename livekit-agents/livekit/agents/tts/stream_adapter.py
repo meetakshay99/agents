@@ -172,7 +172,7 @@ class StreamAdapterWrapper(SynthesizeStream):
                         TimedString(text=joined, start_time=duration)
                     )
 
-                    if not (joined := ev.token.strip()):
+                    if not joined.strip():
                         continue
 
                     async with self._tts._wrapped_tts.synthesize(
