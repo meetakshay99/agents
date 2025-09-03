@@ -141,17 +141,21 @@ class StreamAdapterWrapper(SynthesizeStream):
 
                 # Cumulative words from the start of this event
                 cumulative_words = 0
-
+                total_len = len(parts)
+                
                 for i, part in enumerate(parts):
                     if i % 2 == 1:  # Odd indices are tags (content inside {})
                         # Calculate time offset for all words before this tag
                         time_for_words = cumulative_words / self._words_per_sec if self._words_per_sec > 0 else 0
+                        if (total_len == i+2): # +2 because we are checking for odd only for this block
+                            # Reduce the trigger time for the tag at the end of the input so that its always played before the input finishes.
+                            total_time = total_time-0.1 if total_time > 0.1 else total_time
                         tag_index += 1
                         clean_text = await self._callback(part, tag_index, total_time + time_for_words + total_break_time)
                         # For <trl-break tags, callback will return changing it to <break tag which we need to include in the text sent out to TTS for synthesis but don't want to count it as a word.
                         if clean_text:
                             result_parts.append(' ' + clean_text + ' ')
-                            
+
                         # Also for trl-break update the duration to delay the tags.
                         break_time = self.get_duration(part.strip())
                         total_break_time = total_break_time + break_time
