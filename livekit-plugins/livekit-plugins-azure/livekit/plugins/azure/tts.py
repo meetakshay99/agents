@@ -227,6 +227,9 @@ class ChunkedStream(tts.ChunkedStream):
         self._opts = replace(tts._opts)
 
     def _build_ssml(self) -> str:
+        if self.input_text.startswith("<speak "):
+            return self.input_text
+            
         lang = self._opts.language or "en-US"
         ssml = (
             f'<speak version="1.0" '

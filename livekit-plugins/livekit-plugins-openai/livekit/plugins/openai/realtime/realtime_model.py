@@ -9,7 +9,7 @@ import os
 import time
 import weakref
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional, Union, cast, overload
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -195,6 +195,7 @@ class RealtimeModel(llm.RealtimeModel):
         http_session: aiohttp.ClientSession | None = None,
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        vad_options: dict | None = None
     ) -> None: ...
 
     @overload
@@ -218,6 +219,7 @@ class RealtimeModel(llm.RealtimeModel):
         http_session: aiohttp.ClientSession | None = None,
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        vad_options: dict | None = None
     ) -> None: ...
 
     def __init__(
@@ -241,6 +243,7 @@ class RealtimeModel(llm.RealtimeModel):
         api_version: str | None = None,
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
+        vad_options: dict | None = None
     ) -> None:
         modalities = modalities if is_given(modalities) else ["text", "audio"]
         super().__init__(
@@ -278,6 +281,15 @@ class RealtimeModel(llm.RealtimeModel):
             else:
                 base_url_val = OPENAI_BASE_URL
 
+        reqd_turn_detection = turn_detection if is_given(turn_detection) else DEFAULT_TURN_DETECTION
+        if vad_options:
+            if "threshold" in vad_options:
+                reqd_turn_detection.threshold = vad_options["threshold"]
+            if "prefix_padding_ms" in vad_options:
+                reqd_turn_detection.prefix_padding_ms = vad_options["prefix_padding_ms"]
+            if "silence_duration_ms" in vad_options:
+                reqd_turn_detection.silence_duration_ms = vad_options["silence_duration_ms"]
+
         self._opts = _RealtimeOptions(
             model=model,
             voice=voice,
@@ -288,7 +300,7 @@ class RealtimeModel(llm.RealtimeModel):
             if is_given(input_audio_transcription)
             else DEFAULT_INPUT_AUDIO_TRANSCRIPTION,
             input_audio_noise_reduction=input_audio_noise_reduction,
-            turn_detection=turn_detection if is_given(turn_detection) else DEFAULT_TURN_DETECTION,
+            turn_detection=reqd_turn_detection,
             api_key=api_key,
             base_url=base_url_val,
             is_azure=is_azure,

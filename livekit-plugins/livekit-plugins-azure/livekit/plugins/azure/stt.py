@@ -387,6 +387,8 @@ def _create_speech_recognizer(
     elif config.language and len(config.language) == 1:
         kwargs["language"] = config.language[0]
 
+    speech_config.set_property(property_id=speechsdk.enums.PropertyId.SpeechServiceConnection_LanguageIdMode, value='Continuous')
+
     audio_config = speechsdk.audio.AudioConfig(stream=stream)
     speech_recognizer = speechsdk.SpeechRecognizer(
         speech_config=speech_config, audio_config=audio_config, **kwargs

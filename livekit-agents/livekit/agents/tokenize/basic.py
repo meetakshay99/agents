@@ -20,6 +20,7 @@ __all__ = [
     "WordTokenizer",
     "hyphenate_word",
     "tokenize_paragraphs",
+    "tokenize_dummy"
 ]
 
 
@@ -29,6 +30,40 @@ class _TokenizerOptions:
     min_sentence_len: int
     stream_context_len: int
     retain_format: bool
+
+# Implementing a custom sentence tokenizer which just returns the text in full without
+# tokenizing it. This is because to support <speak tag for polly and azure and for that
+# we cannot have tokenizing of text. We want full text at once to send out to TTS provider.
+class DummySentenceTokenizer(tokenizer.SentenceTokenizer):
+    def __init__(
+        self,
+        *,
+        language: str = "english",
+        min_sentence_len: int = 20,
+        stream_context_len: int = 10,
+        retain_format: bool = False,
+    ) -> None:
+        self._config = _TokenizerOptions(
+            language=language,
+            min_sentence_len=min_sentence_len,
+            stream_context_len=stream_context_len,
+            retain_format=retain_format,
+        )
+
+    def tokenize(self, text: str, *, language: str | None = None) -> list[str]:
+        return [text]
+
+    def stream(self, *, language: str | None = None) -> tokenizer.SentenceStream:
+        def no_split_tokenizer(text: str) -> list[str]:
+            """Custom tokenizer that returns the full text as a single chunk"""
+            if not text or not text.strip():
+                return []
+            return [text.strip()]  # Return full text as single item in list
+        return token_stream.BufferedSentenceStream(
+            tokenizer=no_split_tokenizer,
+            min_token_len=1,
+            min_ctx_len=1,
+        )
 
 
 class SentenceTokenizer(tokenizer.SentenceTokenizer):
