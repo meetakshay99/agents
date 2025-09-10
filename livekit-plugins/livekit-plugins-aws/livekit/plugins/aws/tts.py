@@ -60,6 +60,7 @@ class TTS(tts.TTS):
         voice: str = "Ruth",
         language: NotGivenOr[TTSLanguages | str] = NOT_GIVEN,
         speech_engine: TTSSpeechEngine = "generative",
+        text_type: TTSTextType = "text",
         ssml_params: Dict[str, Any] = None,  # NEW: Dict for all SSML parameters
         sample_rate: int = 16000,
         region: str | None = None,
