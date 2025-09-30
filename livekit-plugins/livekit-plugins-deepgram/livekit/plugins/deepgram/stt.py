@@ -667,7 +667,7 @@ class SpeechStream(stt.SpeechStream):
 
 
 def live_transcription_to_speech_data(
-    language: str, data: dict, *, is_final: bool, min_confidence_threshold: Optional[float]
+    language: str, data: dict, *, is_final: bool, min_confidence_threshold: float | None
 ) -> list[stt.SpeechData]:
     dg_alts = data["channel"]["alternatives"]
 

@@ -12,7 +12,6 @@ def split_sentences(
     Split text into sentences while protecting XML tags and quoted content.
     The text may not contain substrings "<prd>" or "<stop>"
     """
-    logger.info(f"In split_sentences - input = {text}")
     
     # Step 1: Find and protect XML tags with a more robust approach
     protected_items = {}
@@ -151,8 +150,6 @@ def split_sentences(
         return result
     
     protected_text = protect_xml_tags(text)
-#    logger.info(f"After XML protection: {protected_text}")
-#    logger.info(f"Protected items: {protected_items}")
     
     # Step 2: Apply existing sentence splitting logic to protected text
     alphabets = r"([A-Za-z])"
@@ -253,7 +250,6 @@ def split_sentences(
     if buff:
         sentences.append((buff[len(pre_pad):], start_pos, len(final_text) - 1))
 
-    logger.info(f"Sentences split response = {sentences}")
     return sentences
 
 
