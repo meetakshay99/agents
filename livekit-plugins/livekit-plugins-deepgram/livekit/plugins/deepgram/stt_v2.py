@@ -54,6 +54,7 @@ class STTOptions:
     eot_threshold: NotGivenOr[float] = NOT_GIVEN
     eot_timeout_ms: NotGivenOr[int] = NOT_GIVEN
     mip_opt_out: bool = False
+    min_confidence_threshold: float = NOT_GIVEN
     tags: NotGivenOr[list[str]] = NOT_GIVEN
 
 
@@ -72,6 +73,7 @@ class STTv2(stt.STT):
         http_session: aiohttp.ClientSession | None = None,
         base_url: str = "wss://api.deepgram.com/v2/listen",
         mip_opt_out: bool = False,
+        min_confidence_threshold: float = NOT_GIVEN
     ) -> None:
         """Create a new instance of Deepgram STT.
 
@@ -87,6 +89,7 @@ class STTv2(stt.STT):
             http_session: Optional aiohttp ClientSession to use for requests.
             base_url: The base URL for Deepgram API. Defaults to "https://api.deepgram.com/v1/listen".
             mip_opt_out: Whether to take part in the model improvement program
+            min_confidence_threshold(float): minimum confidence threshold for recognition
 
         Raises:
             ValueError: If no API key is provided or found in environment variables.
@@ -113,6 +116,7 @@ class STTv2(stt.STT):
             eot_threshold=eot_threshold,
             eot_timeout_ms=eot_timeout_ms,
             endpoint_url=base_url,
+            min_confidence_threshold=min_confidence_threshold,
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SpeechStreamv2]()
@@ -171,6 +175,7 @@ class STTv2(stt.STT):
         mip_opt_out: NotGivenOr[bool] = NOT_GIVEN,
         tags: NotGivenOr[list[str]] = NOT_GIVEN,
         endpoint_url: NotGivenOr[str] = NOT_GIVEN,
+        min_confidence_threshold: NotGivenOr[float] = NOT_GIVEN
     ) -> None:
         if is_given(model):
             self._opts.model = model
@@ -190,6 +195,8 @@ class STTv2(stt.STT):
             self._opts.endpoint_url = endpoint_url
         if is_given(eager_eot_threshold):
             self._opts.eager_eot_threshold = eager_eot_threshold
+        if is_given(min_confidence_threshold):
+            self._opts.min_confidence_threshold = min_confidence_threshold
 
         for stream in self._streams:
             stream.update_options(
@@ -246,6 +253,7 @@ class SpeechStreamv2(stt.SpeechStream):
         tags: NotGivenOr[list[str]] = NOT_GIVEN,
         endpoint_url: NotGivenOr[str] = NOT_GIVEN,
         eager_eot_threshold: NotGivenOr[float] = NOT_GIVEN,
+        min_confidence_threshold: NotGivenOr[float] = NOT_GIVEN,
     ) -> None:
         if is_given(model):
             self._opts.model = model
@@ -265,7 +273,9 @@ class SpeechStreamv2(stt.SpeechStream):
             self._opts.endpoint_url = endpoint_url
         if is_given(eager_eot_threshold):
             self._opts.eager_eot_threshold = eager_eot_threshold
-
+        if is_given(min_confidence_threshold):
+            self._opts.min_confidence_threshold = min_confidence_threshold
+            
         self._reconnect_event.set()
 
     async def _run(self) -> None:
@@ -425,7 +435,7 @@ class SpeechStreamv2(stt.SpeechStream):
         self._event_ch.send_nowait(usage_event)
 
     def _send_transcript_event(self, event_type: stt.SpeechEventType, data: dict) -> None:
-        alts = _parse_transcription(self._opts.language, data)
+        alts = _parse_transcription(self._opts.language, data, self._opts.min_confidence_threshold)
         if alts:
             event = stt.SpeechEvent(
                 type=event_type,
@@ -490,21 +500,23 @@ class SpeechStreamv2(stt.SpeechStream):
             raise APIStatusError(message=desc, status_code=code)
 
 
-def _parse_transcription(language: str, data: dict[str, Any]) -> list[stt.SpeechData]:
+def _parse_transcription(language: str, data: dict[str, Any], min_confidence_threshold: NotGivenOr(float)) -> list[stt.SpeechData]:
     transcript = data.get("transcript")
     words = data.get("words")
     if not words:
         return []
     confidence = sum(word["confidence"] for word in words) / len(words) if words else 0
-
-    sd = stt.SpeechData(
-        language=language,
-        start_time=data["audio_window_start"] if data["audio_window_start"] else 0,
-        end_time=data["audio_window_end"] if data["audio_window_end"] else 0,
-        confidence=confidence,
-        text=transcript or "",
-    )
-    return [sd]
+    if not is_given(min_confidence_threshold) or confidence >= min_confidence_threshold:
+        sd = stt.SpeechData(
+            language=language,
+            start_time=data["audio_window_start"] if data["audio_window_start"] else 0,
+            end_time=data["audio_window_end"] if data["audio_window_end"] else 0,
+            confidence=confidence,
+            text=transcript or "",
+        )
+        return [sd]
+    else:
+        return []
 
 
 def _validate_tags(tags: list[str]) -> list[str]:
