@@ -55,7 +55,7 @@ class STT(stt.STT):
         tag_audio_events: bool = True,
     ) -> None:
         """
-        Create a new instance of ElevenLabs TTS.
+        Create a new instance of ElevenLabs STT.
 
         Args:
             api_key (NotGivenOr[str]): ElevenLabs API key. Can be set via argument or `ELEVEN_API_KEY` environment variable.
@@ -79,6 +79,14 @@ class STT(stt.STT):
             tag_audio_events=tag_audio_events,
         )
         self._session = http_session
+
+    @property
+    def model(self) -> str:
+        return "Scribe"
+
+    @property
+    def provider(self) -> str:
+        return "ElevenLabs"
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         if not self._session:
