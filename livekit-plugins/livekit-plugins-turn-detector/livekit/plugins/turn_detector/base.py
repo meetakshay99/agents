@@ -122,10 +122,11 @@ class _EUORunnerBase(_InferenceRunner):
                 local_files_only=True,
             )
             sess_options = ort.SessionOptions()
-            sess_options.intra_op_num_threads = max(
-                1, min(math.ceil(hw.get_cpu_monitor().cpu_count()) // 2, 4)
-            )
+            # Optimized for multi-session concurrency: use single thread per session
+            # to reduce thread contention when running 10+ concurrent sessions
+            sess_options.intra_op_num_threads = 1
             sess_options.inter_op_num_threads = 1
+            sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             sess_options.add_session_config_entry("session.dynamic_block_base", "4")
             self._session = ort.InferenceSession(
                 local_path_onnx, providers=["CPUExecutionProvider"], sess_options=sess_options
