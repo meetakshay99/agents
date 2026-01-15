@@ -10,7 +10,7 @@ import numpy as np
 from livekit import rtc
 
 from ...log import logger
-from ...utils import aio, log_exceptions
+from ...utils import aio, log_exceptions, log_exceptions_hot_path
 
 
 @dataclass
@@ -69,7 +69,7 @@ class SpeakingRateStream:
         self._window_size_samples = 0
         self._step_size_samples = 0
 
-    @log_exceptions(logger=logger)
+    @log_exceptions_hot_path(logger=logger)  # Hot path: processes frames with FFT/spectral flux
     async def _main_task(self) -> None:
         _inference_sample_rate = 0
         inference_f32_data = np.empty(0, dtype=np.float32)

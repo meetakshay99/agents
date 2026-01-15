@@ -21,7 +21,7 @@ from ..log import logger
 from ..metrics import TTSMetrics
 from ..telemetry import trace_types, tracer, utils as telemetry_utils
 from ..types import DEFAULT_API_CONNECT_OPTIONS, USERDATA_TIMED_TRANSCRIPT, APIConnectOptions
-from ..utils import aio, audio, codecs, log_exceptions
+from ..utils import aio, audio, codecs, log_exceptions, log_exceptions_hot_path
 
 if TYPE_CHECKING:
     from ..voice.io import TimedString
@@ -767,7 +767,7 @@ class AudioEmitter:
 
         await aio.cancel_and_wait(self._main_atask)
 
-    @log_exceptions(logger=logger)
+    @log_exceptions_hot_path(logger=logger)  # Hot path: processes every TTS audio frame
     async def _main_task(self) -> None:
         from ..voice.io import TimedString
 
@@ -912,7 +912,7 @@ class AudioEmitter:
 
             debug_frames.clear()
 
-        @log_exceptions(logger=logger)
+        @log_exceptions_hot_path(logger=logger)  # Hot path: decodes every audio frame
         async def _decode_task() -> None:
             nonlocal audio_decoder, segment_ctx
             assert segment_ctx is not None
