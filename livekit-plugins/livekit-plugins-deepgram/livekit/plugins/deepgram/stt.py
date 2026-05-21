@@ -451,7 +451,7 @@ class SpeechStream(stt.SpeechStream):
         keywords: NotGivenOr[list[tuple[str, float]]] = NOT_GIVEN,
         keyterm: NotGivenOr[str | list[str]] = NOT_GIVEN,
         profanity_filter: NotGivenOr[bool] = NOT_GIVEN,
-        min_confidence_threshold: NotGivenOr[float] = NOT_GIVEN
+        min_confidence_threshold: NotGivenOr[float] = NOT_GIVEN,
         redact: NotGivenOr[str | list[str]] = NOT_GIVEN,
         numerals: NotGivenOr[bool] = NOT_GIVEN,
         mip_opt_out: NotGivenOr[bool] = NOT_GIVEN,
