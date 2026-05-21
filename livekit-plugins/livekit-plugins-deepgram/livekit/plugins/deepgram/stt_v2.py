@@ -152,6 +152,7 @@ class STTv2(stt.STT):
             eot_timeout_ms=eot_timeout_ms,
             endpoint_url=base_url,
             min_confidence_threshold=min_confidence_threshold,
+            language_hint=language_hint if is_given(language_hint) else NOT_GIVEN,
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SpeechStreamv2]()
@@ -487,7 +488,9 @@ class SpeechStreamv2(stt.SpeechStream):
         if self._opts.tags:
             live_config["tag"] = self._opts.tags
 
-        if self._opts.language_hint:
+        if is_given(self._opts.language_hint) and self._opts.language_hint:
+            # Passed as repeated query params: language_hint=en&language_hint=es
+            # urlencode with doseq=True handles list → multiple params automatically
             live_config["language_hint"] = self._opts.language_hint
 
         try:
