@@ -152,7 +152,6 @@ class STTv2(stt.STT):
             eot_timeout_ms=eot_timeout_ms,
             endpoint_url=base_url,
             min_confidence_threshold=min_confidence_threshold,
-            language_hint=language_hint if is_given(language_hint) else NOT_GIVEN,
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SpeechStreamv2]()
