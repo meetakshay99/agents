@@ -652,7 +652,6 @@ class SpeechStream(stt.SpeechStream):
             "endpointing": False if self._opts.endpointing_ms == 0 else self._opts.endpointing_ms,
             "filler_words": self._opts.filler_words,
             "profanity_filter": self._opts.profanity_filter,
-            "min_confidence_threshold": self._opts.min_confidence_threshold,
             "numerals": self._opts.numerals,
             "mip_opt_out": self._opts.mip_opt_out,
         }
