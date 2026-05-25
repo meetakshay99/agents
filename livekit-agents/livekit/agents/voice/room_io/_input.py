@@ -11,7 +11,7 @@ import livekit.rtc as rtc
 from livekit.rtc._proto.track_pb2 import AudioTrackFeature
 
 from ...log import logger
-from ...utils import aio, log_exceptions
+from ...utils import aio, log_exceptions, log_exceptions_hot_path
 from ..io import AudioInput, VideoInput
 from ._pre_connect_audio import PreConnectAudioHandler
 from .types import NoiseCancellationParams, NoiseCancellationSelector
@@ -134,7 +134,7 @@ class _ParticipantInputStream(Generic[T], ABC):
         self._room.off("token_refreshed", self._on_token_refreshed)
         self._data_ch.close()
 
-    @log_exceptions(logger=logger)
+    @log_exceptions_hot_path(logger=logger)  # Hot path: processes every incoming audio/video frame
     async def _forward_task(
         self,
         old_task: asyncio.Task[None] | None,

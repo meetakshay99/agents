@@ -40,3 +40,28 @@ def log_exceptions(msg: str = "", logger: logging.Logger = logging.getLogger()) 
             return cast(F, fn_logs)
 
     return deco
+
+
+def log_exceptions_hot_path(msg: str = "", logger: logging.Logger = logging.getLogger()) -> Callable[[F], F]:  # noqa: B008
+    """
+    Lightweight decorator for hot-path functions (frame processing loops).
+
+    This is a no-op decorator that returns the function unmodified to eliminate
+    per-call overhead in performance-critical code paths.
+
+    Exceptions still propagate normally and will be caught by:
+    1. Parent task exception handlers
+    2. Global async exception handlers (asyncio.loop.set_exception_handler)
+    3. Python's default uncaught exception handler
+
+    Use this ONLY for functions that:
+    - Process individual frames/samples (called 50-100+ times/second)
+    - Are performance-critical hot paths
+    - Have exception handling in their callers or global handlers
+
+    Use regular @log_exceptions for all other functions (setup, teardown, infrequent operations).
+    """
+    def deco(fn: F) -> F:
+        # No wrapper - return function as-is for maximum performance
+        return fn
+    return deco
