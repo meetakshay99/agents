@@ -7,7 +7,7 @@ from typing import Any
 
 from livekit import rtc
 
-from ...utils import aio, log_exceptions
+from ...utils import aio, log_exceptions, log_exceptions_hot_path
 from ._types import AudioReceiver, AudioSegmentEnd, VideoGenerator
 
 logger = logging.getLogger(__name__)
@@ -118,14 +118,14 @@ class AvatarRunner:
                 video_track, video_options
             )
 
-    @log_exceptions(logger=logger)
+    @log_exceptions_hot_path(logger=logger)  # Hot path: processes every audio frame for avatar
     async def _read_audio(self) -> None:
         async for frame in self._audio_recv:
             if not self._audio_playing and isinstance(frame, rtc.AudioFrame):
                 self._audio_playing = True
             await self._video_gen.push_audio(frame)
 
-    @log_exceptions(logger=logger)
+    @log_exceptions_hot_path(logger=logger)  # Hot path: processes every video frame and audio segment
     async def _forward_video(self) -> None:
         """Forward video to the room through the AV synchronizer"""
 
