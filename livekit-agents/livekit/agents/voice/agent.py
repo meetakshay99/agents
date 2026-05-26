@@ -446,7 +446,7 @@ class Agent:
                 )
                 stream.start_time_offset = time.time() - _audio_input_started_at
 
-                @utils.log_exceptions(logger=logger)
+                @utils.log_exceptions_hot_path(logger=logger)
                 async def _forward_input() -> None:
                     async for frame in audio:
                         stream.push_frame(frame)
