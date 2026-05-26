@@ -250,7 +250,7 @@ class _ParticipantLegacyTranscriptionOutput:
         self._capturing = False
         self._pushed_text = ""
 
-    @utils.log_exceptions(logger=logger)
+    @utils.log_exceptions_hot_path(logger=logger)
     async def capture_text(self, text: str) -> None:
         if self._participant_identity is None or self._track_id is None:
             return
@@ -424,7 +424,7 @@ class _ParticipantStreamTranscriptionOutput:
             attributes=attributes,
         )
 
-    @utils.log_exceptions(logger=logger)
+    @utils.log_exceptions_hot_path(logger=logger)
     async def capture_text(self, text: str) -> None:
         if self._participant_identity is None:
             return
