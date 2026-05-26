@@ -436,7 +436,7 @@ class RoomIO:
             self._user_transcript_ch.send_nowait(ev)
 
     def _on_agent_state_changed(self, ev: AgentStateChangedEvent) -> None:
-        @utils.log_exceptions(logger=logger)
+        @utils.log_exceptions_hot_path(logger=logger)
         async def _set_state() -> None:
             if self._room.isconnected():
                 await self._room.local_participant.set_attributes(
