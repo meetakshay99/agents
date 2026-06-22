@@ -232,6 +232,8 @@ class STT(stt.STT):
             "numerals": config.numerals,
             "mip_opt_out": config.mip_opt_out,
         }
+        if self._opts.keyterm:
+            recognize_config["keyterm"] = self._opts.keyterm
         if config.redact:
             recognize_config["redact"] = config.redact
         if config.enable_diarization:
@@ -318,7 +320,9 @@ class STT(stt.STT):
         if is_given(language):
             self._opts.language = LanguageCode(language)
         if is_given(model):
-            self._opts.model = _validate_model(model, language)
+            self._opts.model = _validate_model(
+                model, language if is_given(language) else (self._opts.language or NOT_GIVEN)
+            )
         if is_given(interim_results):
             self._opts.interim_results = interim_results
         if is_given(punctuate):
@@ -464,7 +468,9 @@ class SpeechStream(stt.SpeechStream):
         if is_given(language):
             self._opts.language = LanguageCode(language)
         if is_given(model):
-            self._opts.model = _validate_model(model, language)
+            self._opts.model = _validate_model(
+                model, language if is_given(language) else (self._opts.language or NOT_GIVEN)
+            )
         if is_given(interim_results):
             self._opts.interim_results = interim_results
         if is_given(punctuate):
