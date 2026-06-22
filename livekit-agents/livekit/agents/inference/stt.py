@@ -43,12 +43,17 @@ DeepgramModels = Literal[
 DeepgramFluxModels = Literal[
     "deepgram/flux-general",
     "deepgram/flux-general-en",
+    "deepgram/flux-general-multi",
 ]
-CartesiaModels = Literal["cartesia/ink-whisper",]
+CartesiaModels = Literal[
+    "cartesia/ink-whisper",
+    "cartesia/ink-2",
+]
 AssemblyAIModels = Literal[
     "assemblyai/universal-streaming",
     "assemblyai/universal-streaming-multilingual",
     "assemblyai/u3-rt-pro",
+    "assemblyai/universal-3-5-pro",
 ]
 ElevenlabsModels = Literal["elevenlabs/scribe_v2_realtime",]
 XaiModels = Literal["xai/stt-1",]
@@ -56,6 +61,7 @@ SpeechmaticsModels = Literal[
     "speechmatics/enhanced",
     "speechmatics/standard",
 ]
+InworldModels = Literal["inworld/inworld-stt-1",]
 
 
 class CartesiaOptions(TypedDict, total=False):
@@ -148,6 +154,18 @@ class XaiOptions(TypedDict, total=False):
     interim_results: bool  # default True; set False to opt out of interim transcripts
 
 
+class InworldOptions(TypedDict, total=False):
+    enable_voice_profile: bool  # default: True
+    voice_profile_top_n: int  # range 1-20, default 10
+    include_word_timestamps: bool  # default: True
+    audio_encoding: Literal["LINEAR16", "AUTO_DETECT"]  # default: LINEAR16
+    inactivity_timeout_seconds: int  # >= 0; 0 disables
+    end_of_turn_confidence_threshold: float  # range 0.0-1.0, default 0.5
+    min_end_of_turn_silence_when_confident: int  # >= 0 (ms)
+    prompts: list[str]
+    vad_threshold: float  # range 0.0-1.0, default 0.5
+
+
 # Diarization is requested via different extra_kwargs keys across
 # providers. Keep this list in one place so adding a new provider is a
 # single-line change and there's no divergence between __init__ and
@@ -218,14 +236,9 @@ def _resolve_vad_for_model(
         )
         return None
     if is_speechmatics and vad_instance is None:
-        try:
-            from livekit.plugins.silero import VAD as SileroVAD
-        except ImportError as e:
-            raise ImportError(
-                "livekit-plugins-silero is required: model "
-                f"{model!r} does not handle endpointing server-side."
-            ) from e
-        vad_instance = SileroVAD.load()
+        from .vad import VAD
+
+        vad_instance = VAD()
     return vad_instance
 
 
@@ -252,6 +265,7 @@ STTModels = (
     | ElevenlabsModels
     | XaiModels
     | SpeechmaticsModels
+    | InworldModels
     | Literal["auto"]  # automatically select a provider based on the language
 )
 STTEncoding = Literal["pcm_s16le"]
@@ -399,6 +413,23 @@ class STT(stt.STT):
     @overload
     def __init__(
         self,
+        model: InworldModels,
+        *,
+        language: NotGivenOr[str] = NOT_GIVEN,
+        base_url: NotGivenOr[str] = NOT_GIVEN,
+        encoding: NotGivenOr[STTEncoding] = NOT_GIVEN,
+        sample_rate: NotGivenOr[int] = NOT_GIVEN,
+        api_key: NotGivenOr[str] = NOT_GIVEN,
+        api_secret: NotGivenOr[str] = NOT_GIVEN,
+        http_session: aiohttp.ClientSession | None = None,
+        extra_kwargs: NotGivenOr[InworldOptions] = NOT_GIVEN,
+        fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
+        conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
         model: str,
         *,
         language: NotGivenOr[str] = NOT_GIVEN,
@@ -433,6 +464,7 @@ class STT(stt.STT):
             | ElevenlabsOptions
             | XaiOptions
             | SpeechmaticsOptions
+            | InworldOptions
         ] = NOT_GIVEN,
         fallback: NotGivenOr[list[FallbackModelType] | FallbackModelType] = NOT_GIVEN,
         conn_options: NotGivenOr[APIConnectOptions] = NOT_GIVEN,
