@@ -51,19 +51,38 @@ class STTOptions:
     buffer_size_seconds: float
     encoding: Literal["pcm_s16le", "pcm_mulaw"] = "pcm_s16le"
     speech_model: Literal[
-        "universal-streaming-english", "universal-streaming-multilingual", "u3-rt-pro", "u3-pro"
-    ] = "universal-streaming-english"
+        "universal-streaming-english",
+        "universal-streaming-multilingual",
+        "u3-rt-pro",
+        "u3-rt-pro-beta-1",
+        "u3-pro",
+        "universal-3-5-pro",
+    ] = "universal-3-5-pro"
     language_detection: NotGivenOr[bool] = NOT_GIVEN
     end_of_turn_confidence_threshold: NotGivenOr[float] = NOT_GIVEN
     min_turn_silence: NotGivenOr[int] = NOT_GIVEN
     max_turn_silence: NotGivenOr[int] = NOT_GIVEN
     format_turns: NotGivenOr[bool] = NOT_GIVEN
+    continuous_partials: NotGivenOr[bool] = NOT_GIVEN
+    interruption_delay: NotGivenOr[int] = NOT_GIVEN
     keyterms_prompt: NotGivenOr[list[str]] = NOT_GIVEN
     prompt: NotGivenOr[str] = NOT_GIVEN
+    agent_context: NotGivenOr[str] = NOT_GIVEN
+    previous_context_n_turns: NotGivenOr[int] = NOT_GIVEN
     vad_threshold: NotGivenOr[float] = NOT_GIVEN
     speaker_labels: NotGivenOr[bool] = NOT_GIVEN
     max_speakers: NotGivenOr[int] = NOT_GIVEN
     domain: NotGivenOr[str] = NOT_GIVEN
+    voice_focus: NotGivenOr[Literal["near-field", "far-field"]] = NOT_GIVEN
+    voice_focus_threshold: NotGivenOr[float] = NOT_GIVEN
+    mode: NotGivenOr[Literal["min_latency", "balanced", "max_accuracy"]] = NOT_GIVEN
+
+
+# Speech models in the u3-rt-pro family, which share the same parameter support
+# (prompt, agent_context, previous_context_n_turns, continuous_partials,
+# interruption_delay, voice_focus, voice_focus_threshold) and connect-time
+# defaults. Mirrors the server-side `SpeechModel.is_u3_pro`.
+_U3_PRO_MODELS = ("u3-rt-pro", "u3-rt-pro-beta-1", "universal-3-5-pro")
 
 
 class STT(stt.STT):
@@ -77,19 +96,28 @@ class STT(stt.STT):
             "universal-streaming-english",
             "universal-streaming-multilingual",
             "u3-rt-pro",
+            "u3-rt-pro-beta-1",
             "u3-pro",
-        ] = "universal-streaming-english",
+            "universal-3-5-pro",
+        ] = "universal-3-5-pro",
         language_detection: NotGivenOr[bool] = NOT_GIVEN,
         end_of_turn_confidence_threshold: NotGivenOr[float] = NOT_GIVEN,
         min_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         max_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         format_turns: NotGivenOr[bool] = NOT_GIVEN,
+        continuous_partials: NotGivenOr[bool] = NOT_GIVEN,
+        interruption_delay: NotGivenOr[int] = NOT_GIVEN,
         keyterms_prompt: NotGivenOr[list[str]] = NOT_GIVEN,
         prompt: NotGivenOr[str] = NOT_GIVEN,
+        agent_context: NotGivenOr[str] = NOT_GIVEN,
+        previous_context_n_turns: NotGivenOr[int] = NOT_GIVEN,
         vad_threshold: NotGivenOr[float] = NOT_GIVEN,
         speaker_labels: NotGivenOr[bool] = NOT_GIVEN,
         max_speakers: NotGivenOr[int] = NOT_GIVEN,
         domain: NotGivenOr[str] = NOT_GIVEN,
+        voice_focus: NotGivenOr[Literal["near-field", "far-field"]] = NOT_GIVEN,
+        voice_focus_threshold: NotGivenOr[float] = NOT_GIVEN,
+        mode: NotGivenOr[Literal["min_latency", "balanced", "max_accuracy"]] = NOT_GIVEN,
         http_session: aiohttp.ClientSession | None = None,
         buffer_size_seconds: float = 0.05,
         base_url: str = "wss://streaming.assemblyai.com",
@@ -108,6 +136,50 @@ class STT(stt.STT):
                 Defaults to 0.4.
             min_turn_silence: Minimum silence in ms before a confident end-of-turn is finalized.
             min_end_of_turn_silence_when_confident: Deprecated. Use min_turn_silence instead.
+            continuous_partials: Whether to emit additional partial transcripts during long
+                turns at a steady ~3 second cadence. By default, partials are emitted at
+                two points: one at 750 ms after turn start (configurable via
+                `interruption_delay`), and one each time silence exceeds
+                `min_turn_silence` without ending the turn. When enabled (default in
+                LiveKit; AssemblyAI server defaults to False), additional partials covering
+                the full turn transcript are emitted approximately every 3 seconds while
+                speech continues, on top of those baseline partials. Only supported with
+                the 'u3-rt-pro' / 'u3-rt-pro-beta-1' models.
+            interruption_delay: How soon the first early partial is emitted, in ms.
+                Range 0–1000, default 500. Lower values produce faster time-to-first-token
+                for barge-in; higher values produce more confident first partials. Only
+                supported with the 'u3-rt-pro' / 'u3-rt-pro-beta-1' models.
+            agent_context: Free-text context describing what the agent said, used to bias
+                transcription of the user's reply. Set at construction or updated per-turn
+                via `update_options(agent_context=...)`. Only supported with the
+                'u3-rt-pro' / 'u3-rt-pro-beta-1' models (max 1500 characters).
+            previous_context_n_turns: Maximum number of prior conversation entries (user
+                transcripts and any `agent_context` values) carried forward as context for
+                each transcription. Set to 0 to disable automatic context carryover
+                entirely; leave unset to use the server default (recommended). Range 0–100.
+                Only supported with the 'u3-rt-pro' / 'u3-rt-pro-beta-1' / 'universal-3-5-pro'
+                models. Set at construction (connect) time only; it cannot be changed via
+                `update_options`.
+            voice_focus: Voice Focus isolates the primary voice and suppresses background
+                noise (chatter, keyboard clicks, fan hum, room echo) before the audio reaches
+                the model. Use 'near-field' for headsets, handsets, and close-talking
+                microphones; use 'far-field' for conference rooms, laptop mics, and other
+                distant-mic setups. Only supported with the 'u3-rt-pro' / 'u3-rt-pro-beta-1' /
+                'universal-3-5-pro' models. Set at construction (connect) time only.
+                See https://www.assemblyai.com/docs/streaming/voice-focus.
+            voice_focus_threshold: Controls how aggressively background audio is suppressed,
+                a float between 0.0 and 1.0 (higher is more aggressive). Only takes effect
+                alongside `voice_focus`. Only supported with the 'u3-rt-pro' /
+                'u3-rt-pro-beta-1' / 'universal-3-5-pro' models. Set at construction (connect)
+                time only.
+            mode: Accuracy/latency preset forwarded to the u3-pro model: 'min_latency'
+                (fastest time-to-text), 'balanced' (the server default, recommended for
+                voice agents), or 'max_accuracy' (highest accuracy, for scribes/post-call).
+                The model applies its own per-mode tuning; any silence, partials, or VAD
+                knobs you set explicitly still take precedence over the mode's defaults.
+                Leave unset to use the server default. Only supported with the 'u3-rt-pro' /
+                'u3-rt-pro-beta-1' / 'universal-3-5-pro' models. Set at construction (connect)
+                time only.
         """
         super().__init__(
             capabilities=stt.STTCapabilities(
@@ -122,8 +194,30 @@ class STT(stt.STT):
             logger.warning("'u3-pro' is deprecated, use 'u3-rt-pro' instead.")
             model = "u3-rt-pro"
 
-        if is_given(prompt) and model != "u3-rt-pro":
-            raise ValueError("The 'prompt' parameter is only supported with the 'u3-rt-pro' model.")
+        # These parameters are only supported by the u3-rt-pro family of models.
+        if model not in _U3_PRO_MODELS:
+            _u3_pro_only_params = {
+                "prompt": prompt,
+                "agent_context": agent_context,
+                "previous_context_n_turns": previous_context_n_turns,
+                "continuous_partials": continuous_partials,
+                "interruption_delay": interruption_delay,
+                "voice_focus": voice_focus,
+                "voice_focus_threshold": voice_focus_threshold,
+                "mode": mode,
+            }
+            for _param_name, _param_value in _u3_pro_only_params.items():
+                if is_given(_param_value):
+                    raise ValueError(
+                        f"The {_param_name!r} parameter is only supported with the "
+                        f"{', '.join(_U3_PRO_MODELS)} models."
+                    )
+
+        # LiveKit defaults continuous_partials to True (vs. AssemblyAI's server default of
+        # False) for steady-cadence partials. This parameter is only supported for
+        # the u3-rt-pro family, enforced by the validation above.
+        if not is_given(continuous_partials) and model in _U3_PRO_MODELS:
+            continuous_partials = True
 
         self._base_url = base_url
         assemblyai_api_key = api_key if is_given(api_key) else os.environ.get("ASSEMBLYAI_API_KEY")
@@ -159,12 +253,19 @@ class STT(stt.STT):
             min_turn_silence=min_turn_silence,
             max_turn_silence=max_turn_silence,
             format_turns=format_turns,
+            continuous_partials=continuous_partials,
+            interruption_delay=interruption_delay,
             keyterms_prompt=keyterms_prompt,
             prompt=prompt,
+            agent_context=agent_context,
+            previous_context_n_turns=previous_context_n_turns,
             vad_threshold=vad_threshold,
             speaker_labels=speaker_labels,
             max_speakers=max_speakers,
             domain=domain,
+            voice_focus=voice_focus,
+            voice_focus_threshold=voice_focus_threshold,
+            mode=mode,
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SpeechStream]()
@@ -218,8 +319,11 @@ class STT(stt.STT):
         min_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         max_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         prompt: NotGivenOr[str] = NOT_GIVEN,
+        agent_context: NotGivenOr[str] = NOT_GIVEN,
         keyterms_prompt: NotGivenOr[list[str]] = NOT_GIVEN,
         vad_threshold: NotGivenOr[float] = NOT_GIVEN,
+        continuous_partials: NotGivenOr[bool] = NOT_GIVEN,
+        interruption_delay: NotGivenOr[int] = NOT_GIVEN,
         # Deprecated — use min_turn_silence instead
         min_end_of_turn_silence_when_confident: NotGivenOr[int] = NOT_GIVEN,
     ) -> None:
@@ -241,10 +345,16 @@ class STT(stt.STT):
             self._opts.max_turn_silence = max_turn_silence
         if is_given(prompt):
             self._opts.prompt = prompt
+        if is_given(agent_context):
+            self._opts.agent_context = agent_context
         if is_given(keyterms_prompt):
             self._opts.keyterms_prompt = keyterms_prompt
         if is_given(vad_threshold):
             self._opts.vad_threshold = vad_threshold
+        if is_given(continuous_partials):
+            self._opts.continuous_partials = continuous_partials
+        if is_given(interruption_delay):
+            self._opts.interruption_delay = interruption_delay
 
         for stream in self._streams:
             stream.update_options(
@@ -253,8 +363,11 @@ class STT(stt.STT):
                 min_turn_silence=min_turn_silence,
                 max_turn_silence=max_turn_silence,
                 prompt=prompt,
+                agent_context=agent_context,
                 keyterms_prompt=keyterms_prompt,
                 vad_threshold=vad_threshold,
+                continuous_partials=continuous_partials,
+                interruption_delay=interruption_delay,
             )
 
 
@@ -306,8 +419,11 @@ class SpeechStream(stt.SpeechStream):
         min_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         max_turn_silence: NotGivenOr[int] = NOT_GIVEN,
         prompt: NotGivenOr[str] = NOT_GIVEN,
+        agent_context: NotGivenOr[str] = NOT_GIVEN,
         keyterms_prompt: NotGivenOr[list[str]] = NOT_GIVEN,
         vad_threshold: NotGivenOr[float] = NOT_GIVEN,
+        continuous_partials: NotGivenOr[bool] = NOT_GIVEN,
+        interruption_delay: NotGivenOr[int] = NOT_GIVEN,
         # Deprecated — use min_turn_silence instead
         min_end_of_turn_silence_when_confident: NotGivenOr[int] = NOT_GIVEN,
     ) -> None:
@@ -329,15 +445,23 @@ class SpeechStream(stt.SpeechStream):
             self._opts.max_turn_silence = max_turn_silence
         if is_given(prompt):
             self._opts.prompt = prompt
+        if is_given(agent_context):
+            self._opts.agent_context = agent_context
         if is_given(keyterms_prompt):
             self._opts.keyterms_prompt = keyterms_prompt
         if is_given(vad_threshold):
             self._opts.vad_threshold = vad_threshold
+        if is_given(continuous_partials):
+            self._opts.continuous_partials = continuous_partials
+        if is_given(interruption_delay):
+            self._opts.interruption_delay = interruption_delay
 
         # Send UpdateConfiguration message over the active websocket
         config_msg: dict = {"type": "UpdateConfiguration"}
         if is_given(prompt):
             config_msg["prompt"] = prompt
+        if is_given(agent_context):
+            config_msg["agent_context"] = agent_context
         if is_given(keyterms_prompt):
             config_msg["keyterms_prompt"] = keyterms_prompt
         if is_given(max_turn_silence):
@@ -346,6 +470,10 @@ class SpeechStream(stt.SpeechStream):
             config_msg["min_turn_silence"] = min_turn_silence
         if is_given(end_of_turn_confidence_threshold):
             config_msg["end_of_turn_confidence_threshold"] = end_of_turn_confidence_threshold
+        if is_given(continuous_partials):
+            config_msg["continuous_partials"] = continuous_partials
+        if is_given(interruption_delay):
+            config_msg["interruption_delay"] = interruption_delay
         if is_given(vad_threshold):
             config_msg["vad_threshold"] = vad_threshold
 
@@ -492,7 +620,7 @@ class SpeechStream(stt.SpeechStream):
         # u3-rt-pro defaults: min=100, max=min (so both 100 unless overridden)
         min_silence: int | None
         max_silence: int | None
-        if self._opts.speech_model == "u3-rt-pro":
+        if self._opts.speech_model in _U3_PRO_MODELS:
             min_silence = (
                 self._opts.min_turn_silence if is_given(self._opts.min_turn_silence) else 100
             )
@@ -514,6 +642,12 @@ class SpeechStream(stt.SpeechStream):
             "encoding": self._opts.encoding,
             "speech_model": self._opts.speech_model,
             "format_turns": self._opts.format_turns if is_given(self._opts.format_turns) else None,
+            "continuous_partials": self._opts.continuous_partials
+            if is_given(self._opts.continuous_partials)
+            else None,
+            "interruption_delay": self._opts.interruption_delay
+            if is_given(self._opts.interruption_delay)
+            else None,
             "end_of_turn_confidence_threshold": self._opts.end_of_turn_confidence_threshold
             if is_given(self._opts.end_of_turn_confidence_threshold)
             else None,
@@ -525,9 +659,16 @@ class SpeechStream(stt.SpeechStream):
             "language_detection": self._opts.language_detection
             if is_given(self._opts.language_detection)
             else True
-            if "multilingual" in self._opts.speech_model or self._opts.speech_model == "u3-rt-pro"
+            if "multilingual" in self._opts.speech_model
+            or self._opts.speech_model in _U3_PRO_MODELS
             else False,
             "prompt": self._opts.prompt if is_given(self._opts.prompt) else None,
+            "agent_context": self._opts.agent_context
+            if is_given(self._opts.agent_context)
+            else None,
+            "previous_context_n_turns": self._opts.previous_context_n_turns
+            if is_given(self._opts.previous_context_n_turns)
+            else None,
             "vad_threshold": self._opts.vad_threshold
             if is_given(self._opts.vad_threshold)
             else None,
@@ -536,6 +677,11 @@ class SpeechStream(stt.SpeechStream):
             else None,
             "max_speakers": self._opts.max_speakers if is_given(self._opts.max_speakers) else None,
             "domain": self._opts.domain if is_given(self._opts.domain) else None,
+            "voice_focus": self._opts.voice_focus if is_given(self._opts.voice_focus) else None,
+            "voice_focus_threshold": self._opts.voice_focus_threshold
+            if is_given(self._opts.voice_focus_threshold)
+            else None,
+            "mode": self._opts.mode if is_given(self._opts.mode) else None,
         }
 
         headers = {
