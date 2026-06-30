@@ -262,6 +262,13 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         resume_false_interruption: NotGivenOr[bool] = NOT_GIVEN,
         agent_false_interruption_timeout: NotGivenOr[float | None] = NOT_GIVEN,
         mcp_servers: NotGivenOr[list[mcp.MCPServer]] = NOT_GIVEN,
+        # Optional callable that receives every incoming AudioFrame before it is
+        # fanned out to VAD, STT, AMD, interruption detector, and turn detector.
+        # Must be synchronous: (rtc.AudioFrame) -> rtc.AudioFrame.
+        # Return the same frame unchanged to pass through; return a silence frame
+        # to suppress the frame for ALL downstream consumers simultaneously.
+        # None (default) means no preprocessing — existing behaviour is unchanged.
+        audio_frame_preprocessor: Callable[[rtc.AudioFrame], rtc.AudioFrame] | None = None,
     ) -> None:
         """`AgentSession` is the LiveKit Agents runtime that glues together
         media streams, speech/LLM components, and tool orchestration into a
@@ -437,6 +444,12 @@ class AgentSession(rtc.EventEmitter[EventTypes], Generic[Userdata_T]):
         # aec warmup: disable interruptions while AEC warms up
         self._aec_warmup_remaining = aec_warmup_duration or 0.0
         self._aec_warmup_timer: asyncio.TimerHandle | None = None
+
+        # Pre-fan-out audio preprocessor hook.  Called synchronously on every
+        # incoming AudioFrame inside AgentActivity.push_audio() before any of
+        # the five consumers (VAD, STT, AMD, interruption, turn detector) see it.
+        # None means no preprocessing (default — existing behaviour preserved).
+        self._audio_preprocessor = audio_frame_preprocessor
 
         # configurable IO
         self._input = io.AgentInput(
