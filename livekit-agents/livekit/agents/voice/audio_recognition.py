@@ -1388,6 +1388,8 @@ class AudioRecognition:
                                 unlikely_threshold = await turn_detector.unlikely_threshold(
                                     self._last_language
                                 )
+                            except asyncio.TimeoutError:
+                                logger.debug("eot prediction timed out within endpointing window")
                             except Exception:
                                 logger.exception("Error predicting end of turn")
 

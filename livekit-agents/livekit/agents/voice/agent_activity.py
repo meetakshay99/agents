@@ -1145,6 +1145,15 @@ class AgentActivity(RecognitionHooks):
         if not self._started:
             return
 
+        # Pre-fan-out hook: if the AgentSession was constructed with an
+        # audio_frame_preprocessor, run it synchronously before any consumer
+        # (VAD, STT, AMD, interruption detector, turn detector) sees the frame.
+        # The preprocessor returns either the original frame (pass-through) or a
+        # silence frame (suppress).  Exceptions are not caught here — the
+        # preprocessor is expected to be fail-open and handle its own errors.
+        if self._session._audio_preprocessor is not None:
+            frame = self._session._audio_preprocessor(frame)
+
         aec_warmup_active: bool = (
             self._session.agent_state == "speaking"
             and self._session._aec_warmup_remaining > 0
