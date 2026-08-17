@@ -94,6 +94,7 @@ from .utils import (
     AZURE_DEFAULT_TURN_DETECTION,
     DEFAULT_MAX_RESPONSE_OUTPUT_TOKENS,
     DEFAULT_MAX_SESSION_DURATION,
+    DEFAULT_TURN_DETECTION,
     calculate_confidence_from_logprobs,
     livekit_item_to_openai_item,
     openai_item_to_livekit_item,
