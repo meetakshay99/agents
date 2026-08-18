@@ -13,12 +13,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import logging
-import aioboto3  # type: ignore
+
 import botocore  # type: ignore
 import botocore.exceptions  # type: ignore
 from aiobotocore.config import AioConfig  # type: ignore
+from aiobotocore.session import AioSession  # type: ignore
 
 from livekit.agents import (
     APIConnectionError,
@@ -35,7 +37,10 @@ from livekit.agents.types import (
 from livekit.agents.utils import is_given
 
 from .models import TTSLanguages, TTSSpeechEngine, TTSTextType
-from .utils import _strip_nones
+from .utils import _resolve_session, _strip_nones
+
+if TYPE_CHECKING:
+    import aioboto3  # type: ignore
 
 DEFAULT_SPEECH_ENGINE: TTSSpeechEngine = "generative"
 DEFAULT_VOICE = "Ruth"
@@ -68,7 +73,7 @@ class TTS(tts.TTS):
         region: str | None = None,
         api_key: str | None = None,
         api_secret: str | None = None,
-        session: aioboto3.Session | None = None,
+        session: AioSession | aioboto3.Session | None = None,
     ) -> None:
         """
         Create a new instance of AWS Polly TTS.
@@ -87,7 +92,8 @@ class TTS(tts.TTS):
             region(str, optional): The region to use for the synthesis. Defaults to "us-east-1".
             api_key(str, optional): AWS access key id.
             api_secret(str, optional): AWS secret access key.
-            session(aioboto3.Session, optional): Optional aioboto3 session to use.
+            session(AioSession, optional): Optional aiobotocore session to use. Passing a legacy
+                aioboto3.Session is deprecated but still accepted.
         """  # noqa: E501
         super().__init__(
             capabilities=tts.TTSCapabilities(
@@ -96,11 +102,12 @@ class TTS(tts.TTS):
             sample_rate=sample_rate,
             num_channels=1,
         )
-        self._session = session or aioboto3.Session(
-            aws_access_key_id=api_key if is_given(api_key) else None,
-            aws_secret_access_key=api_secret if is_given(api_secret) else None,
-            region_name=region if is_given(region) else None,
-        )
+        self._session = _resolve_session(session)
+        if session is None:
+            if is_given(api_key) and api_key and is_given(api_secret) and api_secret:
+                self._session.set_credentials(api_key, api_secret)
+            if is_given(region) and region:
+                self._session.set_config_variable("region", region)
 
         self._opts = _TTSOptions(
             voice=voice,
@@ -190,7 +197,7 @@ class ChunkedStream(tts.ChunkedStream):
                 retries={"mode": "standard", "total_max_attempts": 1},
             )
             logger.info(f"Sending text to polly - {self._input_text}")
-            async with self._tts._session.client("polly", config=config) as client:  # type: ignore
+            async with self._tts._session.create_client("polly", config=config) as client:  # type: ignore
                 response = await client.synthesize_speech(
                     **_strip_nones(
                         {
@@ -214,7 +221,7 @@ class ChunkedStream(tts.ChunkedStream):
                     )
 
                     async with response["AudioStream"] as resp:
-                        async for data, _ in resp.content.iter_chunks():
+                        async for data in resp.iter_chunks():
                             output_emitter.push(data)
         except botocore.exceptions.ConnectTimeoutError:
             raise APITimeoutError() from None

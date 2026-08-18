@@ -457,10 +457,55 @@ class RealtimeModel(llm.RealtimeModel):
             )
 
         modalities = modalities if is_given(modalities) else ["text", "audio"]
+
+        # `vad_options` is a Trulience-specific shorthand (see s2s_model_factory.py) for
+        # threshold/prefix_padding_ms/silence_duration_ms overrides. In production it is
+        # always passed WITHOUT an explicit `turn_detection` (the speech-to-speech avatar
+        # config path never sets turn_detection, only vad_options). Because of that we can't
+        # just poke these attributes onto whatever `turn_detection` defaults to: the default
+        # is DEFAULT_TURN_DETECTION, a module-level *singleton* semantic_vad object shared by
+        # every RealtimeModel instance in the process — mutating it in place would leak one
+        # session's VAD settings into every other session that falls back to the same
+        # default, and semantic_vad doesn't even declare these fields (they're server_vad-only).
+        # So: build a dedicated server_vad TurnDetection when there's no explicit
+        # turn_detection, or copy-then-override when the caller did pass one. This has to run
+        # before resolved_turn_detection is computed below, so the create_response warning and
+        # the can_disable_turn_detection capability both see the final, overridden settings.
+        effective_turn_detection = turn_detection
+        if vad_options:
+            if is_given(turn_detection) and turn_detection is not None:
+                # caller supplied their own turn_detection: override a copy, never their object
+                effective_turn_detection = turn_detection.model_copy()
+            else:
+                # no turn_detection given: vad_options implies server-side VAD, so build a
+                # standalone server_vad config instead of touching the semantic_vad default
+                effective_turn_detection = TurnDetection(type="server_vad", create_response=True)
+
+            if "threshold" in vad_options:
+                effective_turn_detection.threshold = vad_options["threshold"]
+            if "prefix_padding_ms" in vad_options:
+                effective_turn_detection.prefix_padding_ms = vad_options["prefix_padding_ms"]
+            if "silence_duration_ms" in vad_options:
+                effective_turn_detection.silence_duration_ms = vad_options["silence_duration_ms"]
+
+        resolved_turn_detection = to_turn_detection(effective_turn_detection)
+        if (
+            resolved_turn_detection is not None
+            and resolved_turn_detection.create_response is False
+            and resolved_turn_detection.interrupt_response is not False
+        ):
+            logger.warning(
+                "create_response=False hands turn taking to the client, but the server still "
+                "cancels its response on user speech, pass interrupt_response=False as well"
+            )
+
         super().__init__(
             capabilities=llm.RealtimeCapabilities(
                 message_truncation=True,
-                turn_detection=turn_detection is not None,
+                # create_response=False leaves the reply to the client: client-side turn taking
+                turn_detection=resolved_turn_detection is not None
+                and resolved_turn_detection.create_response is not False,
+                can_disable_turn_detection=not is_given(turn_detection),
                 user_transcription=input_audio_transcription is not None,
                 auto_tool_reply_generation=False,
                 audio_output="audio" in modalities,
@@ -497,15 +542,6 @@ class RealtimeModel(llm.RealtimeModel):
             else:
                 base_url_val = os.getenv("OPENAI_BASE_URL", OPENAI_BASE_URL)
 
-        reqd_turn_detection = turn_detection if is_given(turn_detection) else DEFAULT_TURN_DETECTION
-        if vad_options:
-            if "threshold" in vad_options:
-                reqd_turn_detection.threshold = vad_options["threshold"]
-            if "prefix_padding_ms" in vad_options:
-                reqd_turn_detection.prefix_padding_ms = vad_options["prefix_padding_ms"]
-            if "silence_duration_ms" in vad_options:
-                reqd_turn_detection.silence_duration_ms = vad_options["silence_duration_ms"]
-                
         self._opts = _RealtimeOptions(
             model=model,
             voice=voice,
@@ -513,7 +549,7 @@ class RealtimeModel(llm.RealtimeModel):
             modalities=modalities,
             input_audio_transcription=to_audio_transcription(input_audio_transcription),
             input_audio_noise_reduction=to_noise_reduction(input_audio_noise_reduction),
-            turn_detection=to_turn_detection(reqd_turn_detection),
+            turn_detection=resolved_turn_detection,
             api_key=api_key,
             base_url=base_url_val,
             is_azure=is_azure,
@@ -684,10 +720,13 @@ class RealtimeModel(llm.RealtimeModel):
         if not is_given(input_audio_transcription):
             input_audio_transcription = AZURE_DEFAULT_INPUT_AUDIO_TRANSCRIPTION
 
+        # capture intent before applying the azure default, so the framework can still
+        # auto-disable server-side turn detection when the user didn't configure it
+        can_disable_turn_detection = not is_given(turn_detection)
         if not is_given(turn_detection):
             turn_detection = AZURE_DEFAULT_TURN_DETECTION
 
-        return RealtimeModel(
+        model = RealtimeModel(
             voice=voice,
             modalities=modalities,
             input_audio_transcription=input_audio_transcription,
@@ -704,6 +743,8 @@ class RealtimeModel(llm.RealtimeModel):
             base_url=base_url,
             max_session_duration=max_session_duration,
         )
+        model._capabilities.can_disable_turn_detection = can_disable_turn_detection
+        return model
 
     def update_options(
         self,
@@ -759,7 +800,9 @@ class RealtimeModel(llm.RealtimeModel):
         for sess in self._sessions:
             sess.update_options(
                 voice=voice,
-                turn_detection=self._opts.turn_detection,
+                # only propagate when the caller set it, so a session that opted out of
+                # server-side turn detection isn't force-synced back on by an unrelated update
+                turn_detection=self._opts.turn_detection if is_given(turn_detection) else NOT_GIVEN,
                 tool_choice=tool_choice,
                 input_audio_transcription=self._opts.input_audio_transcription,
                 input_audio_noise_reduction=self._opts.input_audio_noise_reduction,
@@ -780,8 +823,8 @@ class RealtimeModel(llm.RealtimeModel):
 
         return self._http_session
 
-    def session(self) -> RealtimeSession:
-        sess = RealtimeSession(self)
+    def session(self, *, turn_detection_disabled: bool = False) -> RealtimeSession:
+        sess = RealtimeSession(self, turn_detection_disabled=turn_detection_disabled)
         self._sessions.add(sess)
         return sess
 
@@ -854,11 +897,16 @@ class RealtimeSession(
     - openai_client_event_queued: expose the raw client events sent to the OpenAI Realtime API
     """
 
-    def __init__(self, realtime_model: RealtimeModel) -> None:
+    def __init__(
+        self, realtime_model: RealtimeModel, *, turn_detection_disabled: bool = False
+    ) -> None:
         super().__init__(realtime_model)
         self._realtime_model: RealtimeModel = realtime_model
         # per-session copy of opts so update_options can diff against session's own state
-        self._opts = replace(realtime_model._opts)
+        self._opts = replace(
+            realtime_model._opts,
+            turn_detection=None if turn_detection_disabled else realtime_model._opts.turn_detection,
+        )
         self._tools = llm.ToolContext.empty()
         self._msg_ch = utils.aio.Chan[RealtimeClientEvent | dict[str, Any]]()
         self._input_resampler: rtc.AudioResampler | None = None
@@ -873,12 +921,14 @@ class RealtimeSession(
         self._item_delete_future: dict[str, asyncio.Future] = {}
         self._item_create_future: dict[str, asyncio.Future] = {}
 
+        # future per in-flight chat ctx event, so a rejection settles the one it answers
+        self._chat_ctx_event_futures: dict[str, asyncio.Future] = {}
+
         # generate_reply event_ids cancelled or timed out before response.created arrived; the
         # response is cancelled by id and discarded when it finally arrives
         self._discarded_event_ids: set[str] = set()
 
-        # accumulates partial input-audio transcripts per (item_id, content_index)
-        self._input_transcript_accumulators: dict[str, dict[int, str]] = {}
+        self._reset_input_turn_state()
 
         self._current_generation: _ResponseGeneration | _DiscardedGeneration | None = None
         self._remote_chat_ctx = llm.remote_chat_context.RemoteChatContext()
@@ -895,6 +945,20 @@ class RealtimeSession(
     def send_event(self, event: RealtimeClientEvent | dict[str, Any]) -> None:
         with contextlib.suppress(utils.aio.channel.ChanClosed):
             self._msg_ch.send_nowait(event)
+
+    def _reset_input_turn_state(self) -> None:
+        """Per-turn input state, keyed by item_id and valid only within one connection.
+
+        Every field here must be discarded on reconnect: the server assigns new item ids,
+        so a stale entry can never be matched again.
+        """
+        # accumulates partial input-audio transcripts per (item_id, content_index)
+        self._input_transcript_accumulators: dict[str, dict[int, str]] = {}
+
+        # when serverside VAD detected speech onset, per item_id. Correlating through the
+        # item keeps each turn paired with its own start; a single "last speech started"
+        # value cannot, because a late transcript would consume the next turn's value.
+        self._input_speech_started_at: dict[str, float] = {}
 
     @utils.log_exceptions(logger=logger)
     async def _main_task(self) -> None:
@@ -917,7 +981,9 @@ class RealtimeSession(
             if tools:
                 events.append(self._create_tools_update_event(tools))
 
-            # chat context
+            # chat context. the turn state goes first, since what it settles belongs in the
+            # mirror that is replayed below
+            self._reset_input_turn_state()
             chat_ctx = self.chat_ctx.copy(
                 exclude_function_call=True,
                 exclude_instructions=True,
@@ -927,7 +993,6 @@ class RealtimeSession(
             )
             old_chat_ctx = self._remote_chat_ctx
             self._remote_chat_ctx = llm.remote_chat_context.RemoteChatContext()
-            self._input_transcript_accumulators.clear()
             events.extend(self._create_update_chat_ctx_events(chat_ctx))
 
             try:
@@ -1070,12 +1135,8 @@ class RealtimeSession(
                     self.emit("openai_client_event_queued", msg)
                     await ws_conn.send_str(json.dumps(msg))
 
-                    if lk_oai_debug:
-                        msg_copy = msg.copy()
-                        if msg_copy["type"] == "input_audio_buffer.append":
-                            msg_copy = {**msg_copy, "audio": "..."}
-
-                        logger.debug(f">>> {msg_copy}")
+                    if lk_oai_debug and msg["type"] != "input_audio_buffer.append":
+                        logger.debug(f">>> {msg}")
                 except Exception:
                     logger.exception("failed to send event")
 
@@ -1408,30 +1469,45 @@ class RealtimeSession(
 
             events = self._create_update_chat_ctx_events(chat_ctx)
             futs: list[asyncio.Future[None]] = []
+            self._chat_ctx_event_futures = {}
 
             for ev in events:
                 futs.append(f := asyncio.Future[None]())
                 if isinstance(ev, ConversationItemDeleteEvent):
                     self._item_delete_future[ev.item_id] = f
-                elif isinstance(ev, ConversationItemCreateEvent):
+                else:
                     assert ev.item.id is not None
                     self._item_create_future[ev.item.id] = f
+
+                # an updated item sends a delete and a create under the same id, so only the
+                # event id tells a rejection which of the two it answers
+                if ev.event_id:
+                    self._chat_ctx_event_futures[ev.event_id] = f
                 self.send_event(ev)
 
             if not futs:
                 return
             try:
-                await asyncio.wait_for(asyncio.gather(*futs, return_exceptions=True), timeout=5.0)
+                results = await asyncio.wait_for(
+                    asyncio.gather(*futs, return_exceptions=True), timeout=5.0
+                )
             except asyncio.TimeoutError:
-                # clean up timed-out futures so late server responses don't hit
-                # InvalidStateError when calling set_result on cancelled futures
+                raise llm.RealtimeError("update_chat_ctx timed out.") from None
+            finally:
+                self._chat_ctx_event_futures = {}
                 for ev in events:
                     if isinstance(ev, ConversationItemDeleteEvent):
                         self._item_delete_future.pop(ev.item_id, None)
-                    elif isinstance(ev, ConversationItemCreateEvent):
+                    else:
                         assert ev.item.id is not None
                         self._item_create_future.pop(ev.item.id, None)
-                raise llm.RealtimeError("update_chat_ctx timed out.") from None
+
+            # a rejected item is not worth failing the turn over
+            if rejected := [str(r) for r in results if isinstance(r, BaseException)]:
+                logger.warning(
+                    f"{self._realtime_model._provider_label} rejected part of a chat context update",  # noqa: E501
+                    extra={"errors": rejected},
+                )
 
     def _create_update_chat_ctx_events(
         self, chat_ctx: llm.ChatContext
@@ -1773,8 +1849,10 @@ class RealtimeSession(
             yield frame
 
     def _handle_input_audio_buffer_speech_started(
-        self, _: InputAudioBufferSpeechStartedEvent
+        self, event: InputAudioBufferSpeechStartedEvent
     ) -> None:
+        if event.item_id:
+            self._input_speech_started_at[event.item_id] = time.time()
         self.emit("input_speech_started", llm.InputSpeechStartedEvent())
 
     def _handle_input_audio_buffer_speech_stopped(
@@ -1889,8 +1967,8 @@ class RealtimeSession(
             )
 
         if fut := self._item_create_future.pop(event.item.id, None):
-            if fut.cancelled():
-                logger.error(f"item create future for `{event.item.id}` was already cancelled")
+            if fut.done():
+                logger.error(f"item create future for `{event.item.id}` was already settled")
             else:
                 fut.set_result(None)
 
@@ -1898,6 +1976,7 @@ class RealtimeSession(
         assert event.item_id is not None, "item_id is None"
 
         self._input_transcript_accumulators.pop(event.item_id, None)
+        self._input_speech_started_at.pop(event.item_id, None)
 
         try:
             self._remote_chat_ctx.delete(event.item_id)
@@ -1907,8 +1986,8 @@ class RealtimeSession(
             )
 
         if fut := self._item_delete_future.pop(event.item_id, None):
-            if fut.cancelled():
-                logger.error(f"item delete future for `{event.item_id}` was already cancelled")
+            if fut.done():
+                logger.error(f"item delete future for `{event.item_id}` was already settled")
             else:
                 fut.set_result(None)
 
@@ -1958,6 +2037,7 @@ class RealtimeSession(
                 transcript=event.transcript,
                 is_final=True,
                 confidence=confidence,
+                turn_started_at=self._input_speech_started_at.pop(event.item_id, None),
             ),
         )
 
@@ -1971,12 +2051,16 @@ class RealtimeSession(
 
         # close any open partial stream so consumers waiting for is_final don't hang
         partial = self._clear_transcript_accumulator(event.item_id, event.content_index or 0)
+        turn_started_at = self._input_speech_started_at.pop(event.item_id, None)
         if partial is None:
             return
         self.emit(
             "input_audio_transcription_completed",
             llm.InputTranscriptionCompleted(
-                item_id=event.item_id, transcript=partial, is_final=True
+                item_id=event.item_id,
+                transcript=partial,
+                is_final=True,
+                turn_started_at=turn_started_at,
             ),
         )
 
@@ -2222,7 +2306,28 @@ class RealtimeSession(
             logger.debug("Unknown response status: %s", event.response.status)
 
     def _handle_error(self, event: RealtimeErrorEvent) -> None:
+        if event_id := event.error.event_id:
+            # a rejected item event gets no deleted/added reply, so fail its future rather than
+            # leave update_chat_ctx to stall inside the speech that awaits it
+            if fut := self._chat_ctx_event_futures.pop(event_id, None):
+                if not fut.done():
+                    fut.set_exception(llm.RealtimeError(event.error.message))
+                # a terminal one still has to end the session, whatever it came in reply to
+                if not _is_fatal_error(event.error):
+                    return
+            # a rejected response.create gets no response.created; fail its future now
+            # instead of orphaning it until the 10s timeout (still emitted/raised below)
+            elif fut := self._response_created_futures.pop(event_id, None):
+                if not fut.done():
+                    fut.set_exception(llm.RealtimeError(event.error.message, code=event.error.code))
+
         if event.error.message.startswith("Cancellation failed"):
+            return
+
+        if event.error.code == "input_audio_buffer_commit_empty" and (
+            self._opts.turn_detection is not None
+        ):
+            # the server VAD commits each segment itself, ours lands on an emptied buffer
             return
 
         provider_label = self._realtime_model._provider_label

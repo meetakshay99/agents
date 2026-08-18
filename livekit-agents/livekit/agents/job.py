@@ -40,7 +40,14 @@ from .log import logger
 from .observability import Tagger
 from .telemetry import _upload_session_report, otel_metrics
 from .telemetry.traces import _BufferingHandler, _setup_cloud_tracer, _shutdown_telemetry
-from .types import ATTRIBUTE_SIMULATOR, ATTRIBUTE_SIMULATOR_DISPATCH, NotGivenOr
+from .types import (
+    ATTRIBUTE_REDACTION_ENABLED,
+    ATTRIBUTE_SIMULATION_ENABLED,
+    ATTRIBUTE_SIMULATOR,
+    ATTRIBUTE_SIMULATOR_DISPATCH,
+    NotGivenOr,
+    recording_enabled,
+)
 from .utils import http_context, is_given, wait_for_participant
 from .utils.deprecation import deprecate_params
 from .utils.misc import is_cloud
@@ -85,6 +92,21 @@ def get_job_context(*, required: bool = True) -> JobContext | None:
 
 
 get_current_job_context = get_job_context
+
+
+def current_simulation() -> SimulationContext | None:
+    """The :class:`SimulationContext` of the job running on this task, or ``None``.
+
+    ``None`` covers everything that is not a simulation: a production job, and code
+    running outside a job context at all (console mode, tests). Unlike
+    :meth:`JobContext.simulation_context` this does not need the job context in hand,
+    so it can be called from deep inside the stack.
+    """
+    ctx = get_job_context(required=False)
+    if ctx is None:
+        return None
+
+    return ctx.simulation_context()
 
 
 @unique
@@ -296,7 +318,7 @@ class JobContext:
 
         has_evals = bool(self._tagger.evaluations or self._tagger.outcome)
         obs_url = _observability_url(self._info.url)
-        if (any(report.recording_options.values()) or has_evals) and obs_url:
+        if (recording_enabled(report.options.recording_options) or has_evals) and obs_url:
             try:
                 await _upload_session_report(
                     agent_name=self._info.job.agent_name,
@@ -304,6 +326,7 @@ class JobContext:
                     report=report,
                     tagger=self._tagger,
                     http_session=http_context.http_session(),
+                    metadata=self._otel_metadata(report.options.recording_options),
                 )
             except Exception:
                 logger.exception("failed to upload the session report to LiveKit Cloud")
@@ -371,7 +394,6 @@ class JobContext:
             )
 
         sr = SessionReport(
-            recording_options=session._recording_options,
             job_id=self.job.id,
             room_id=self.job.room.sid,
             room=self.job.room.name,
@@ -480,6 +502,30 @@ class JobContext:
 
         self._simulation_ctx = SimulationContext(dispatch, self)
         return self._simulation_ctx
+
+    @property
+    def inference_headers(self) -> dict[str, str]:
+        """Extra headers this job puts on every LiveKit Inference request it makes.
+
+        Merged last by ``inference.get_inference_headers``, so what the job asserts
+        about itself outranks what an individual model was configured with. Empty for
+        an ordinary job.
+        """
+        from .inference._utils import HEADER_INFERENCE_PRIORITY
+        from .simulation import SimulationMode
+
+        headers: dict[str, str] = {}
+
+        # A text simulation is batch load: a run fans out many jobs at once and nobody
+        # is waiting on the answers, so it must not compete with live traffic for
+        # gateway capacity, and it must not be able to ask for priority either. Audio
+        # simulations are excluded: they run in real time against the audio pipeline,
+        # so their latency has to stay representative of production.
+        sim = self.simulation_context()
+        if sim is not None and sim.simulation_mode == SimulationMode.SIMULATION_MODE_TEXT:
+            headers[HEADER_INFERENCE_PRIORITY] = "low"
+
+        return headers
 
     @property
     def local_participant_identity(self) -> str:
@@ -772,9 +818,11 @@ class JobContext:
         _setup_cloud_tracer(
             room_id=self.job.room.sid,
             job_id=self.job.id,
+            agent_name=self.job.agent_name,
             observability_url=obs_url,
             enable_traces=options["traces"],
             enable_logs=options["logs"],
+            metadata=self._otel_metadata(options),
         )
         # init_recording is typically called during session.start(), at which point a bunch of
         # the logs would have already been emitted. we want to capture all of the logs as it
@@ -820,6 +868,14 @@ class JobContext:
 
     def token_claims(self) -> Claims:
         return api.TokenVerifier().verify(self._info.token, verify_signature=False)
+
+    def _otel_metadata(self, options: RecordingOptions | None = None) -> dict[str, Any] | None:
+        metadata: dict[str, Any] = {}
+        if self.simulation_context() is not None:
+            metadata[ATTRIBUTE_SIMULATION_ENABLED] = True
+        if options and options.get("redaction", False):
+            metadata[ATTRIBUTE_REDACTION_ENABLED] = True
+        return metadata or None
 
 
 def _apply_auto_subscribe_opts(room: rtc.Room, auto_subscribe: AutoSubscribe) -> None:
