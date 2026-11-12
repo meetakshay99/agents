@@ -183,8 +183,8 @@ def split_sentences(
     protected_text = re.sub(r" " + alphabets + "[.]", " \\1<prd>", protected_text)
 
     # Mark end of sentence punctuations with <stop>
-    protected_text = re.sub(r"([.!?。！？])([\"\"''])", "\\1\\2<stop>", protected_text)
-    protected_text = re.sub(r"([.!?。！？])(?![\"\"''])", "\\1<stop>", protected_text)
+    protected_text = re.sub(r"([.!?。！？؟۔।॥])([\"\"''])", "\\1\\2<stop>", protected_text)
+    protected_text = re.sub(r"([.!?。！？؟۔।॥])(?![\"\"''])", "\\1<stop>", protected_text)
 
     # After marking sentence boundaries, check if any protected elements end with punctuation
     # and have text following them - this indicates a sentence boundary
@@ -194,7 +194,7 @@ def split_sentences(
         for placeholder, original in protected_items.items():
             if placeholder in temp_text:
                 # Check if the protected element ends with sentence-ending punctuation
-                if original.rstrip().endswith(('.', '!', '?', '。', '！', '？')):
+                if original.rstrip().endswith(('.', '!', '?', '。', '！', '？', '؟', '۔', '।', '॥')):
                     # Check what comes after this placeholder
                     placeholder_pos = temp_text.find(placeholder)
                     if placeholder_pos != -1:
