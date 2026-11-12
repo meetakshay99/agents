@@ -374,6 +374,7 @@ class RealtimeModel(llm.RealtimeModel):
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
         temperature: NotGivenOr[float] = NOT_GIVEN,  # deprecated, unused in v1
+        vad_options: dict | None = None,
     ) -> None: ...
 
     @overload
@@ -405,6 +406,7 @@ class RealtimeModel(llm.RealtimeModel):
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
         temperature: NotGivenOr[float] = NOT_GIVEN,  # deprecated, unused in v1
+        vad_options: dict | None = None,
     ) -> None: ...
 
     def __init__(
@@ -435,6 +437,7 @@ class RealtimeModel(llm.RealtimeModel):
         max_session_duration: NotGivenOr[float | None] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
         temperature: NotGivenOr[float] = NOT_GIVEN,  # deprecated, unused in v1
+        vad_options: dict | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -459,6 +462,9 @@ class RealtimeModel(llm.RealtimeModel):
             entra_token (str | None): Azure Entra token auth (alternative to api_key).
             max_session_duration (float | None | NotGiven): Seconds before recycling the connection.
             conn_options (APIConnectOptions): Retry/backoff and connection settings.
+            vad_options (dict | None): Server VAD overrides (``threshold``, ``prefix_padding_ms``,
+                ``silence_duration_ms``). Without ``turn_detection`` this selects ``server_vad``
+                with these values; with ``turn_detection`` it overrides a copy of it.
             temperature (float | NotGiven): Deprecated; ignored by Realtime v1.
 
         Raises:
@@ -500,7 +506,25 @@ class RealtimeModel(llm.RealtimeModel):
             )
 
         modalities = modalities if is_given(modalities) else ["text", "audio"]
-        resolved_turn_detection = to_turn_detection(turn_detection)
+        # vad_options: build a standalone server_vad config when the caller gave no
+        # turn_detection, or copy-then-override when they did. Runs before
+        # resolved_turn_detection so the half-disabled warning and capabilities see the final
+        # settings; the shared DEFAULT_TURN_DETECTION and the caller's object are never mutated.
+        effective_turn_detection = turn_detection
+        if vad_options:
+            if is_given(turn_detection) and turn_detection is not None:
+                effective_turn_detection = turn_detection.model_copy()
+            else:
+                effective_turn_detection = TurnDetection(type="server_vad", create_response=True)
+
+            if "threshold" in vad_options:
+                effective_turn_detection.threshold = vad_options["threshold"]
+            if "prefix_padding_ms" in vad_options:
+                effective_turn_detection.prefix_padding_ms = vad_options["prefix_padding_ms"]
+            if "silence_duration_ms" in vad_options:
+                effective_turn_detection.silence_duration_ms = vad_options["silence_duration_ms"]
+
+        resolved_turn_detection = to_turn_detection(effective_turn_detection)
         _warn_on_half_disabled_turn_taking(resolved_turn_detection)
         super().__init__(
             capabilities=llm.RealtimeCapabilities(
