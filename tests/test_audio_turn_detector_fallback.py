@@ -85,6 +85,7 @@ class _ScriptedTransport:
     ) -> None:
         self.run_behavior = run_behavior  # "idle" | "raise" | "return"
         self.run_exc = run_exc
+        self.session_id: str | None = None
         self.run_calls = 0
         self.stream_ref: Any = None
         self.events: list[tuple[str, Any]] = []
@@ -285,6 +286,20 @@ class TestLocalFailureRetry:
         # transport is still mounted; no swap occurred).
         assert stream._transport is transport
         await stream.aclose()
+
+    async def test_failed_prediction_resolves_the_positive_default(self) -> None:
+        class _FailingEOT:
+            def predict(self, pcm: Any) -> float:
+                raise RuntimeError("native boom")
+
+        with patch("livekit.agents.inference.eot.transports._EOT", _FailingEOT):
+            transport = _LocalTransport(opts=_make_opts(model="turn-detector-v1-mini"))
+        stream = MagicMock()
+        transport.attach(stream)
+        transport.run_inference("request")
+        await asyncio.gather(*transport._tasks)
+
+        assert stream._resolve_prediction.call_args.args == ("request", 1.0)
 
 
 class TestWarningDedupe:

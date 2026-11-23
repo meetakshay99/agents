@@ -123,6 +123,7 @@ class WordTokenizer(tokenizer.WordTokenizer):
                 ignore_punctuation=self._ignore_punctuation,
                 split_character=self._split_character,
                 retain_format=self._retain_format,
+                split_cjk_clauses=True,
             )
         ]
 
@@ -133,6 +134,9 @@ class WordTokenizer(tokenizer.WordTokenizer):
                 ignore_punctuation=self._ignore_punctuation,
                 split_character=self._split_character,
                 retain_format=self._retain_format,
+                # a CJK reply has no spaces, so a word stream (e.g. a TTS input) would
+                # otherwise hold all of it until the end
+                split_cjk_clauses=True,
             ),
             min_token_len=1,
             min_ctx_len=1,  # ignore
